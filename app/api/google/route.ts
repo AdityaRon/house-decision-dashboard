@@ -3,10 +3,11 @@ export const runtime = "edge";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const path = searchParams.get("path") || ""; // e.g. distancematrix, geocode, place/nearbysearch
+  const path = searchParams.get("path") || "";
   const qs = searchParams.get("qs") || "";
 
-  const allow = ["distancematrix", "geocode", "place/nearbysearch"];
+  // Now allow Find Place too
+  const allow = ["distancematrix", "geocode", "place/nearbysearch", "place/findplacefromtext"];
   if (!allow.some((p) => path.startsWith(p))) {
     return new Response(JSON.stringify({ error: "Blocked path" }), {
       status: 400,
