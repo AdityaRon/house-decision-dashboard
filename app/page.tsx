@@ -77,6 +77,14 @@ export default function HouseDecisionDashboard() {
     }
   }, []);
   useEffect(() => { localStorage.setItem("house-dashboard", JSON.stringify(state)); }, [state]);
+  useEffect(() => {
+    if (state.newAddress && (state.office1 || state.office2)) {
+      // fire and forget; ignore result
+      handleDistances();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.newAddress, state.office1, state.office2]);
+
 
   // Derived
   const newMortgageMonthly = useMemo(() => monthlyMortgage({ price: num(state.newPrice), downPct: num(state.newDownPct), ratePct: num(state.newRatePct), years: num(state.newYears, 30) }), [state.newPrice, state.newDownPct, state.newRatePct, state.newYears]);
@@ -173,20 +181,37 @@ export default function HouseDecisionDashboard() {
   }
 
   // -------- Redfin actions with debug capture --------
+// Replace existing parseRedfinUrl with:
+  function deriveAddressFromRedfinUrl(urlStr: string): string | null {
+    try {
+      const u = new URL(urlStr);
+      const parts = u.pathname.split("/").filter(Boolean);
+      const idx = parts.findIndex((p) => p === "home");
+      if (idx <= 0 || parts.length < 3) return null;
+      const state = parts[0]; // CA
+      const city = parts[1]?.replace(/-/g, " "); // San Jose
+      const streetZip = parts[2] || ""; // 1893-Newbury-Park-Dr-95133
+      const tokens = streetZip.split("-");
+      if (tokens.length < 2) return null;
+      const zipToken = tokens[tokens.length - 1];
+      const zip = /^\d{5}$/.test(zipToken) ? zipToken : "";
+      const street = (zip ? tokens.slice(0, -1) : tokens).join(" ").trim();
+      if (!street || !city || !state) return null;
+      return `${street}, ${city}, ${state}${zip ? ` ${zip}` : ""}`;
+    } catch { return null; }
+  }
+
   async function parseRedfinUrl() {
     if (!state.redfinUrl) return;
+    setParsingAddress(true);
     try {
-      setParsingAddress(true);
-      const url = new URL(state.redfinUrl);
-      const parts = url.pathname.split("/").filter(Boolean);
-      const homeIdx = parts.findIndex((p) => p === "home");
-      if (homeIdx > 0) {
-        const addressParts = parts.slice(0, homeIdx).slice(-1)[0];
-        const pretty = decodeURIComponent(addressParts.replace(/-/g, " "));
-        setState((s: any) => ({ ...s, newAddress: pretty }));
-      }
-    } finally { setParsingAddress(false); }
+      const pretty = deriveAddressFromRedfinUrl(state.redfinUrl);
+      if (pretty) setState((s: any) => ({ ...s, newAddress: pretty }));
+    } finally {
+      setParsingAddress(false);
+    }
   }
+    
 
   async function fetchRedfinDetails() {
     if (!state.redfinUrl) return;

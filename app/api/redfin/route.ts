@@ -1,5 +1,6 @@
 // app/api/redfin/route.ts
-// Cheerio-free Redfin extractor (Edge runtime safe)
+// Redfin extractor with 403 fallback and URL-derived address.
+// No cheerio/undici. Edge-safe.
 
 export const runtime = "edge";
 
@@ -43,11 +44,9 @@ function deepFind(obj: any, pred: (k: string, v: any) => boolean, acc: any[] = [
   return acc;
 }
 function stripHtmlToText(html: string): string {
-  // remove scripts/styles, then tags, collapse whitespace
   const noScripts = html.replace(/<script[\s\S]*?<\/script>/gi, "");
   const noStyles = noScripts.replace(/<style[\s\S]*?<\/style>/gi, "");
   const noTags = noStyles.replace(/<[^>]+>/g, " ");
-  // very light entity handling for the common ones
   return noTags
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
@@ -63,13 +62,27 @@ function* extractJsonLd(html: string): Generator<any> {
     const raw = m[1].trim();
     try {
       const json = JSON.parse(raw);
-      if (Array.isArray(json)) {
-        for (const x of json) yield x;
-      } else {
-        yield json;
-      }
+      if (Array.isArray(json)) for (const x of json) yield x;
+      else yield json;
     } catch {}
   }
+}
+// Build a usable address from the Redfin URL path.
+function addressFromRedfinUrl(u: URL): string | null {
+  // e.g. /CA/San-Jose/1893-Newbury-Park-Dr-95133/home/143043477
+  const parts = u.pathname.split("/").filter(Boolean);
+  const idx = parts.findIndex((p) => p === "home");
+  if (idx <= 0 || parts.length < 3) return null;
+  const state = parts[0]; // CA
+  const city = parts[1]?.replace(/-/g, " "); // San Jose
+  const streetZip = parts[2] || ""; // 1893-Newbury-Park-Dr-95133
+  const tokens = streetZip.split("-");
+  if (tokens.length < 2) return null;
+  const zipToken = tokens[tokens.length - 1];
+  const zip = /^\d{5}$/.test(zipToken) ? zipToken : "";
+  const street = (zip ? tokens.slice(0, -1) : tokens).join(" ").trim();
+  if (!street || !city || !state) return null;
+  return `${street}, ${city}, ${state}${zip ? ` ${zip}` : ""}`;
 }
 
 // ---------- API ----------
@@ -93,7 +106,12 @@ export async function GET(req: Request) {
   const debug: any = { target };
 
   try {
-    const htmlRes = await fetch(target, {
+    const u = new URL(target);
+    // Pre-fill address from URL so we can do distances even if the page blocks us.
+    out.address = addressFromRedfinUrl(u);
+
+    // Try to fetch the actual page first.
+    const primaryRes = await fetch(target, {
       headers: {
         "User-Agent": "Mozilla/5.0 (house-dashboard)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -101,82 +119,91 @@ export async function GET(req: Request) {
         "Cache-Control": "no-cache",
       },
     });
-    debug.status = htmlRes.status;
-    debug.ok = htmlRes.ok;
+    debug.primary = { status: primaryRes.status, ok: primaryRes.ok };
 
-    const html = await htmlRes.text();
-    const text = stripHtmlToText(html);
-
-    // ---- 1) JSON-LD (address, sizes if present) ----
-    for (const obj of extractJsonLd(html)) {
-      try {
-        if (obj && (obj["@type"] === "SingleFamilyResidence" || obj["@type"] === "Residence" || obj["@type"] === "House")) {
-          if (!out.address && obj.address) {
-            const a = obj.address;
-            out.address = [a.streetAddress, a.addressLocality, a.addressRegion, a.postalCode]
-              .filter(Boolean).join(", ");
-          }
-          if (!out.livingAreaSqft && obj.floorSize?.value) out.livingAreaSqft = numOrNull(obj.floorSize.value);
-          if (!out.lotSizeSqft && obj.lotSize?.value) out.lotSizeSqft = numOrNull(obj.lotSize.value);
-        }
-      } catch {}
+    let html = "";
+    if (primaryRes.ok) {
+      html = await primaryRes.text();
+    } else {
+      // 403 fallback: get a readable text mirror (no cookies/JS)
+      const mirror = `https://r.jina.ai/http://${u.host}${u.pathname}`;
+      const mirrorRes = await fetch(mirror, { headers: { "User-Agent": "Mozilla/5.0 (house-dashboard)" } });
+      debug.mirror = { url: mirror, status: mirrorRes.status, ok: mirrorRes.ok };
+      html = await mirrorRes.text(); // This is plain text, but stripHtmlToText handles it fine.
     }
 
-    // ---- 2) __REDUX_STATE__ (Redfin often embeds a big JSON) ----
-    const reduxMatch = html.match(/__REDUX_STATE__\s*=\s*({[\s\S]*?});/);
-    if (reduxMatch) {
-      try {
-        const reduxJson = JSON.parse(reduxMatch[1]);
-        debug.redux = true;
-
-        if (!out.address) {
-          const addrObjs = deepFind(reduxJson, (k, v) => k.toLowerCase().includes("address") && typeof v === "object");
-          for (const a of addrObjs) {
-            const addr = [a.streetLine || a.streetAddress, a.city || a.addressLocality, a.state || a.addressRegion, a.zip || a.postalCode]
-              .filter(Boolean).join(", ");
-            if (addr) { out.address = addr; break; }
+    // Parse JSON-LD when we have real HTML
+    if (html.includes("<script")) {
+      for (const obj of extractJsonLd(html)) {
+        try {
+          if (obj && (obj["@type"] === "SingleFamilyResidence" || obj["@type"] === "Residence" || obj["@type"] === "House")) {
+            if (!out.address && obj.address) {
+              const a = obj.address;
+              out.address = [a.streetAddress, a.addressLocality, a.addressRegion, a.postalCode]
+                .filter(Boolean).join(", ");
+            }
+            if (!out.livingAreaSqft && obj.floorSize?.value) out.livingAreaSqft = numOrNull(obj.floorSize.value);
+            if (!out.lotSizeSqft && obj.lotSize?.value) out.lotSizeSqft = numOrNull(obj.lotSize.value);
           }
-        }
-        if (!out.livingAreaSqft) {
-          const areas = deepFind(reduxJson, (k, v) =>
-            /living.?sq|living.?area|finished.?sq.?ft|sq.?ft|square.?feet/i.test(k) &&
-            (typeof v === "number" || typeof v === "string"));
-          out.livingAreaSqft = numOrNull(areas.find((x: any) => numOrNull(x)));
-        }
-        if (!out.lotSizeSqft) {
-          const lots = deepFind(reduxJson, (k, v) =>
-            /lot.?size|lot.?area|lot.?sq.?ft/i.test(k) &&
-            (typeof v === "number" || typeof v === "string"));
-          out.lotSizeSqft = numOrNull(lots.find((x: any) => numOrNull(x)));
-        }
-        if (!out.facing) {
-          const faceTokens = deepFind(reduxJson, (k, v) => /facing|orientation/i.test(k) && typeof v === "string");
-          out.facing = toFacing(faceTokens.find(Boolean) || null);
-        }
-        if (!out.schools.length) {
-          const schoolNodes = deepFind(reduxJson, (k, v) => /school/i.test(k) && Array.isArray(v));
-          for (const arr of schoolNodes) {
-            for (const s of arr) {
-              const name = s?.name || s?.schoolName;
-              if (!name) continue;
-              const level = s?.level || s?.gradeLevel || s?.type;
-              const rating = numOrNull(s?.rating || s?.greatSchoolsRating) ?? undefined;
-              out.schools.push({ name, level, rating });
+        } catch {}
+      }
+      // __REDUX_STATE__ (if present)
+      const reduxMatch = html.match(/__REDUX_STATE__\s*=\s*({[\s\S]*?});/);
+      if (reduxMatch) {
+        try {
+          const reduxJson = JSON.parse(reduxMatch[1]);
+          debug.redux = true;
+
+          if (!out.address) {
+            const addrObjs = deepFind(reduxJson, (k, v) => k.toLowerCase().includes("address") && typeof v === "object");
+            for (const a of addrObjs) {
+              const addr = [a.streetLine || a.streetAddress, a.city || a.addressLocality, a.state || a.addressRegion, a.zip || a.postalCode]
+                .filter(Boolean).join(", ");
+              if (addr) { out.address = addr; break; }
             }
           }
-          const seen = new Set<string>();
-          out.schools = out.schools.filter((s) => {
-            const key = (s.level || "") + "|" + s.name.toLowerCase();
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-          });
-        }
-      } catch {}
+          if (!out.livingAreaSqft) {
+            const areas = deepFind(reduxJson, (k, v) =>
+              /living.?sq|living.?area|finished.?sq.?ft|sq.?ft|square.?feet/i.test(k) &&
+              (typeof v === "number" || typeof v === "string"));
+            out.livingAreaSqft = numOrNull(areas.find((x: any) => numOrNull(x)));
+          }
+          if (!out.lotSizeSqft) {
+            const lots = deepFind(reduxJson, (k, v) =>
+              /lot.?size|lot.?area|lot.?sq.?ft/i.test(k) &&
+              (typeof v === "number" || typeof v === "string"));
+            out.lotSizeSqft = numOrNull(lots.find((x: any) => numOrNull(x)));
+          }
+          if (!out.facing) {
+            const faceTokens = deepFind(reduxJson, (k, v) => /facing|orientation/i.test(k) && typeof v === "string");
+            out.facing = toFacing(faceTokens.find(Boolean) || null);
+          }
+          if (!out.schools.length) {
+            const schoolNodes = deepFind(reduxJson, (k, v) => /school/i.test(k) && Array.isArray(v));
+            for (const arr of schoolNodes) {
+              for (const s of arr) {
+                const name = s?.name || s?.schoolName;
+                if (!name) continue;
+                const level = s?.level || s?.gradeLevel || s?.type;
+                const rating = numOrNull(s?.rating || s?.greatSchoolsRating) ?? undefined;
+                out.schools.push({ name, level, rating });
+              }
+            }
+            const seen = new Set<string>();
+            out.schools = out.schools.filter((s) => {
+              const key = (s.level || "") + "|" + s.name.toLowerCase();
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+          }
+        } catch {}
+      }
     }
 
-    // ---- 3) Fallback: scan visible page text ----
-    // Living area: “Living Sq. Ft.: 1,714”, “Living Area: 1,714”, or “Square Feet: 1,714”
+    // Text-level parsing (works for both HTML and mirror text)
+    const text = stripHtmlToText(html);
+
     if (!out.livingAreaSqft) {
       const m =
         text.match(/Living\s*Sq\.?\s*Ft\.?\s*[:\-]?\s*([\d,]{3,7})/i) ||
@@ -184,24 +211,16 @@ export async function GET(req: Request) {
         text.match(/Square\s*Feet\s*[:\-]?\s*([\d,]{3,7})/i);
       if (m) out.livingAreaSqft = numOrNull(m[1]);
     }
-
-    // Lot size: “Lot Size: 673 square feet” or “Lot Size (sq ft): 5,000”
     if (!out.lotSizeSqft) {
       const m =
         text.match(/Lot\s*Size\s*[:\-]?\s*([\d,]{2,7})\s*(?:sq\.?\s*ft|square\s*feet)/i) ||
         text.match(/Lot\s*Size\s*\(sq\s*ft\)\s*[:\-]?\s*([\d,]{2,7})/i);
       if (m) out.lotSizeSqft = numOrNull(m[1]);
     }
-
-    // Facing
     if (!out.facing) {
       const m = text.match(/(?:Faces|Facing|Direction\s*Faces?)\s*[:\-]?\s*(North(?:east)?|South(?:east)?|East|West|South(?:west)?|North(?:west)?)/i);
       out.facing = toFacing(m?.[1] ?? null);
     }
-
-    // Schools:
-    // A) "5/10 Millard Mccollam Elementary School"
-    // B) "Elementary School: Millard Mccollam ... GreatSchools Rating 5/10"
     if (!out.schools.length) {
       const temp: School[] = [];
       const reA = /(\d{1,2})\s*\/\s*10\s+([A-Za-z0-9 .,'\-]+?(?:Elementary|Middle|High)\s+School)/gi;
@@ -240,13 +259,13 @@ export async function GET(req: Request) {
         schoolsCount: out.schools.length,
       },
     };
-    console.log("[/api/redfin] success", out.debug); // View in Vercel → Functions logs
+    console.log("[/api/redfin] done", out.debug);
     return new Response(JSON.stringify(out), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
   } catch (e: any) {
-    console.log("[/api/redfin] error", { target, message: String(e?.message || e) });
+    console.log("[/api/redfin] error", { message: String(e?.message || e) });
     return new Response(JSON.stringify({ error: "Scrape failed", details: String(e?.message || e) }), {
       status: 500,
       headers: { "content-type": "application/json" },
