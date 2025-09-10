@@ -1,4 +1,3 @@
-// app/api/google/route.ts
 export const runtime = "edge";
 
 function redact(url: string) {
@@ -10,7 +9,14 @@ export async function GET(req: Request) {
   const path = searchParams.get("path") || "";
   const qs = searchParams.get("qs") || "";
 
-  const allow = ["distancematrix", "geocode", "place/nearbysearch", "place/findplacefromtext"];
+  // Added place/textsearch so we can do "KinderCare near <address>"
+  const allow = [
+    "distancematrix",
+    "geocode",
+    "place/nearbysearch",
+    "place/findplacefromtext",
+    "place/textsearch"
+  ];
   if (!allow.some((p) => path.startsWith(p))) {
     console.log("[/api/google] blocked path", { path });
     return new Response(JSON.stringify({ error: "Blocked path" }), { status: 400, headers: { "content-type": "application/json" } });
@@ -24,6 +30,7 @@ export async function GET(req: Request) {
 
   const target = `https://maps.googleapis.com/maps/api/${path}/json?${qs}&key=${apiKey}`;
   const redacted = redact(target);
+
   try {
     console.log("[/api/google] fetch", { path, url: redacted });
     const res = await fetch(target, { headers: { "User-Agent": "house-dashboard" } });

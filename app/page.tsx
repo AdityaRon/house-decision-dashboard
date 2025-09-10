@@ -1,10 +1,13 @@
-// app/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Share2, Home, DollarSign, MapPin, Clock, Compass, Building2, Baby, Activity, Loader2, Save, Bug } from "lucide-react";
-import { Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from "recharts";
+import {
+  Share2, Home, DollarSign, MapPin, Clock, Compass, Building2, Baby, Activity, Loader2, Save, Bug, School
+} from "lucide-react";
+import {
+  Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend, ComposedChart
+} from "recharts";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -13,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 
 const currency = (n: number) => n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+const pct = (v: number) => `${(v * 100).toFixed(0)}%`;
 const num = (v: any, d = 0) => { const n = parseFloat(String(v).replace(/,/g, "")); return isFinite(n) ? n : d; };
 
 function monthlyMortgage({ price, downPct, ratePct, years }: { price: number; downPct: number; ratePct: number; years: number; }) {
@@ -25,6 +29,25 @@ function monthlyMortgage({ price, downPct, ratePct, years }: { price: number; do
 
 function encodeState(obj: any) { return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
 function decodeState(s: string) { try { return JSON.parse(decodeURIComponent(escape(atob(s)))); } catch { return null; } }
+
+function deriveAddressFromRedfinUrl(urlStr: string): string | null {
+  try {
+    const u = new URL(urlStr);
+    const parts = u.pathname.split("/").filter(Boolean);
+    const idx = parts.findIndex((p) => p === "home");
+    if (idx <= 0 || parts.length < 3) return null;
+    const state = parts[0]; // CA
+    const city = parts[1]?.replace(/-/g, " ");
+    const streetZip = parts[2] || "";
+    const tokens = streetZip.split("-");
+    if (tokens.length < 2) return null;
+    const zipToken = tokens[tokens.length - 1];
+    const zip = /^\d{5}$/.test(zipToken) ? zipToken : "";
+    const street = (zip ? tokens.slice(0, -1) : tokens).join(" ").trim();
+    if (!street || !city || !state) return null;
+    return `${street}, ${city}, ${state}${zip ? ` ${zip}` : ""}`;
+  } catch { return null; }
+}
 
 export default function HouseDecisionDashboard() {
   const [state, setState] = useState<any>(() => ({
@@ -43,6 +66,8 @@ export default function HouseDecisionDashboard() {
     // Property details
     livingAreaSqft: "", lotSizeSqft: "", facing: "Unknown",
     assignedSchools: [] as { name: string; rating?: number | null; level?: string }[],
+    // Approx schools (Places)
+    nearbySchools: [] as { level: "Elementary"|"Middle"|"High", name: string, vicinity?: string }[],
   }));
 
   // Debug
@@ -77,16 +102,8 @@ export default function HouseDecisionDashboard() {
     }
   }, []);
   useEffect(() => { localStorage.setItem("house-dashboard", JSON.stringify(state)); }, [state]);
-  useEffect(() => {
-    if (state.newAddress && (state.office1 || state.office2)) {
-      // fire and forget; ignore result
-      handleDistances();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.newAddress, state.office1, state.office2]);
 
-
-  // Derived
+  // Derived numbers
   const newMortgageMonthly = useMemo(() => monthlyMortgage({ price: num(state.newPrice), downPct: num(state.newDownPct), ratePct: num(state.newRatePct), years: num(state.newYears, 30) }), [state.newPrice, state.newDownPct, state.newRatePct, state.newYears]);
   const newHouseCarrying = useMemo(() => newMortgageMonthly + num(state.newPropTaxMonthly) + num(state.newHOAMonthly) + num(state.newInsuranceMonthly), [newMortgageMonthly, state.newPropTaxMonthly, state.newHOAMonthly, state.newInsuranceMonthly]);
   const existingNet = useMemo(() => (num(state.existingMortgageMonthly) + num(state.existingPropTaxMonthly) + num(state.existingHOAMonthly)) - num(state.expectedRentMonthly), [state.existingMortgageMonthly, state.existingPropTaxMonthly, state.existingHOAMonthly, state.expectedRentMonthly]);
@@ -96,11 +113,24 @@ export default function HouseDecisionDashboard() {
   const grossIncome = useMemo(() => (num(state.p1SemiMonthly) + num(state.p2SemiMonthly)) * 2, [state.p1SemiMonthly, state.p2SemiMonthly]);
   const remainingIncome = useMemo(() => grossIncome - (livingExpenses + newHouseCarrying + existingNet), [grossIncome, livingExpenses, newHouseCarrying, existingNet]);
 
-  const expenseBreakdown = [
-    { name: "New House", value: Math.max(0, Math.round(newHouseCarrying)) },
-    ...(existingLoss > 0 ? [{ name: "Existing House Loss", value: Math.round(existingLoss) }] : []),
-    { name: "Living Expenses", value: Math.max(0, Math.round(livingExpenses)) },
+  // Ratios (DTI-like)
+  const frontEndDTI = useMemo(() => (grossIncome ? (newHouseCarrying / grossIncome) : 0), [newHouseCarrying, grossIncome]);
+  const backEndDTI = useMemo(() => (grossIncome ? ((newHouseCarrying + Math.max(existingNet, 0) + num(state.expCars)) / grossIncome) : 0), [newHouseCarrying, existingNet, state.expCars, grossIncome]);
+
+  // Charts
+  const outflowStack = [
+    { name: "Mortgage P&I", value: Math.round(newMortgageMonthly) },
+    { name: "Prop Tax", value: Math.round(num(state.newPropTaxMonthly)) },
+    { name: "HOA", value: Math.round(num(state.newHOAMonthly)) },
+    { name: "Insurance", value: Math.round(num(state.newInsuranceMonthly)) },
+    { name: "Existing Loss", value: Math.round(existingLoss) },
+    { name: "Cars", value: Math.round(num(state.expCars)) },
+    { name: "Food", value: Math.round(num(state.expFood)) },
+    { name: "Daycare", value: Math.round(num(state.expDaycare)) },
+    { name: "Utilities", value: Math.round(num(state.expElectricity) + num(state.expWater)) },
+    { name: "Misc", value: Math.round(num(state.expMisc)) },
   ];
+
   const incomeVsOutflow = [{ name: "Income", value: Math.round(grossIncome) }, { name: "Outflow", value: Math.round(totalExpenses) }];
 
   // Loading states
@@ -110,6 +140,9 @@ export default function HouseDecisionDashboard() {
   const [loadingDistances, setLoadingDistances] = useState(false);
   const [loadingRedfin, setLoadingRedfin] = useState(false);
   const [parsingAddress, setParsingAddress] = useState(false);
+  const [loadingKinder, setLoadingKinder] = useState(false);
+  const [loadingSchools, setLoadingSchools] = useState(false);
+  const [loadingProperty, setLoadingProperty] = useState(false);
 
   // ---------- Google helpers (with debug capture) ----------
   async function callGoogle(path: string, params: Record<string, string>) {
@@ -151,12 +184,85 @@ export default function HouseDecisionDashboard() {
     return { distanceText: elem?.distance?.text || "-", durationText: (elem?.duration_in_traffic || elem?.duration)?.text || "-" };
   }
 
+  // KinderCare — try Nearby; if none, try Text Search "KinderCare near <address>"
   async function findKinderCare(addressText: string) {
-    const { data: g } = await callGoogle("geocode", { address: addressText });
-    const loc = g?.results?.[0]?.geometry?.location;
-    if (!loc) return [] as any[];
-    const { data: n } = await callGoogle("place/nearbysearch", { location: `${loc.lat},${loc.lng}`, radius: "8000", keyword: "KinderCare" });
-    return (n?.results || []).map((r: any) => ({ name: r.name, vicinity: r.vicinity }));
+    setLoadingKinder(true);
+    try {
+      const { data: g } = await callGoogle("geocode", { address: addressText });
+      const loc = g?.results?.[0]?.geometry?.location;
+
+      let results: any[] = [];
+      if (loc) {
+        const near = await callGoogle("place/nearbysearch", {
+          location: `${loc.lat},${loc.lng}`, radius: "10000", keyword: "KinderCare"
+        });
+        results = near?.data?.results || [];
+      }
+
+      if (!results.length) {
+        const text = await callGoogle("place/textsearch", { query: `KinderCare near ${addressText}`, region: "us" });
+        results = text?.data?.results || [];
+      }
+
+      return results.map((r: any) => ({ name: r.name, vicinity: r.vicinity || r.formatted_address || "" }));
+    } finally {
+      setLoadingKinder(false);
+    }
+  }
+
+  async function handleKinderCare() {
+    if (!state.newAddress) return;
+    setKinderCares(await findKinderCare(state.newAddress));
+  }
+
+  // Approx “assigned” schools: closest Elementary/Middle/High via Places
+  async function findNearbySchools(addressText: string) {
+    setLoadingSchools(true);
+    try {
+      const { data: g } = await callGoogle("geocode", { address: addressText });
+      const loc = g?.results?.[0]?.geometry?.location;
+      if (!loc) return [] as any[];
+
+      async function closest(keyword: string, level: "Elementary"|"Middle"|"High") {
+        const res = await callGoogle("place/nearbysearch", {
+          location: `${loc.lat},${loc.lng}`,
+          rankby: "distance",
+          keyword,
+          type: "school"
+        });
+        const first = res?.data?.results?.[0];
+        return first ? { level, name: first.name, vicinity: first.vicinity } : null;
+      }
+
+      const [e, m, h] = await Promise.all([
+        closest("elementary school", "Elementary"),
+        closest("middle school", "Middle"),
+        closest("high school", "High"),
+      ]);
+
+      return [e, m, h].filter(Boolean) as any[];
+    } finally {
+      setLoadingSchools(false);
+    }
+  }
+
+  // Property fallback using Estated
+  async function fetchPropertyFromEstated() {
+    if (!state.newAddress) return;
+    setLoadingProperty(true);
+    try {
+      const res = await fetch(`/api/property?address=${encodeURIComponent(state.newAddress)}`);
+      const data = await res.json();
+      if (data?.livingAreaSqft || data?.lotSizeSqft) {
+        setState((s: any) => ({
+          ...s,
+          livingAreaSqft: data.livingAreaSqft ?? s.livingAreaSqft,
+          lotSizeSqft: data.lotSizeSqft ?? s.lotSizeSqft,
+        }));
+      }
+    } finally {
+      setLoadingProperty(false);
+    }
   }
 
   async function handleDistances() {
@@ -172,46 +278,31 @@ export default function HouseDecisionDashboard() {
     } finally { setLoadingDistances(false); }
   }
 
-  async function handleKinderCare() {
-    if (!state.newAddress) return;
-    try {
-      setLoadingDistances(true);
-      setKinderCares(await findKinderCare(state.newAddress));
-    } finally { setLoadingDistances(false); }
-  }
+  // Auto-run distances & lookups when we have an address
+  useEffect(() => {
+    if (state.newAddress) {
+      handleDistances();
+      // Don’t spam APIs—run KinderCare/Schools once when empty
+      if (!kinderCares.length) handleKinderCare();
+      if (!state.nearbySchools.length) (async () => {
+        const s = await findNearbySchools(state.newAddress);
+        if (s?.length) setState((prev: any) => ({ ...prev, nearbySchools: s }));
+      })();
+      // property fallback if fields missing
+      if (!state.livingAreaSqft || !state.lotSizeSqft) fetchPropertyFromEstated();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.newAddress]);
 
   // -------- Redfin actions with debug capture --------
-// Replace existing parseRedfinUrl with:
-  function deriveAddressFromRedfinUrl(urlStr: string): string | null {
-    try {
-      const u = new URL(urlStr);
-      const parts = u.pathname.split("/").filter(Boolean);
-      const idx = parts.findIndex((p) => p === "home");
-      if (idx <= 0 || parts.length < 3) return null;
-      const state = parts[0]; // CA
-      const city = parts[1]?.replace(/-/g, " "); // San Jose
-      const streetZip = parts[2] || ""; // 1893-Newbury-Park-Dr-95133
-      const tokens = streetZip.split("-");
-      if (tokens.length < 2) return null;
-      const zipToken = tokens[tokens.length - 1];
-      const zip = /^\d{5}$/.test(zipToken) ? zipToken : "";
-      const street = (zip ? tokens.slice(0, -1) : tokens).join(" ").trim();
-      if (!street || !city || !state) return null;
-      return `${street}, ${city}, ${state}${zip ? ` ${zip}` : ""}`;
-    } catch { return null; }
-  }
-
   async function parseRedfinUrl() {
     if (!state.redfinUrl) return;
     setParsingAddress(true);
     try {
       const pretty = deriveAddressFromRedfinUrl(state.redfinUrl);
       if (pretty) setState((s: any) => ({ ...s, newAddress: pretty }));
-    } finally {
-      setParsingAddress(false);
-    }
+    } finally { setParsingAddress(false); }
   }
-    
 
   async function fetchRedfinDetails() {
     if (!state.redfinUrl) return;
@@ -250,6 +341,16 @@ export default function HouseDecisionDashboard() {
   }
 
   const dirOptions = ["N","NE","E","SE","S","SW","W","NW","Unknown"];
+
+  // Simple progress bar
+  function Progress({ value }: { value: number }) {
+    const w = Math.max(0, Math.min(100, Math.round(value * 100)));
+    return (
+      <div className="w-full h-3 bg-slate-200 rounded-full overflow-hidden">
+        <div className={`h-3 ${w > 36 ? "bg-rose-500" : w > 28 ? "bg-amber-500" : "bg-emerald-500"}`} style={{ width: `${w}%` }} />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen w-full bg-gradient-to-b from-slate-50 to-slate-100">
@@ -294,10 +395,12 @@ export default function HouseDecisionDashboard() {
                           {loadingRedfin ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : null}
                           Fetch details
                         </Button>
+                        <Button type="button" variant="outline" onClick={fetchPropertyFromEstated} disabled={!state.newAddress || loadingProperty}>
+                          {loadingProperty ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : null}
+                          Estated fallback
+                        </Button>
                       </div>
-                      <p className="text-xs text-slate-500 mt-1">
-                        Serverless “/api/redfin” extracts address, facing, lot size, living area & assigned schools (when available).
-                      </p>
+                      <p className="text-xs text-slate-500 mt-1">If Redfin blocks, “Estated fallback” can fill living area & lot size (add <code>ESTATED_API_KEY</code> in Vercel).</p>
 
                       <div className="mt-2 grid grid-cols-2 gap-3">
                         <div className="col-span-2">
@@ -350,22 +453,21 @@ export default function HouseDecisionDashboard() {
                     <div><Label>Electricity</Label><Input value={state.expElectricity} onChange={e=>setState({...state, expElectricity: e.target.value})} /></div>
                     <div><Label>Water</Label><Input value={state.expWater} onChange={e=>setState({...state, expWater: e.target.value})} /></div>
                     <div><Label>Misc</Label><Input value={state.expMisc} onChange={e=>setState({...state, expMisc: e.target.value})} /></div>
-                    <div className="col-span-2 bg-slate-50 rounded-lg p-2 text-sm">Total living expenses = <strong className="ml-1">{currency(livingExpenses)}</strong></div>
                   </div>
                 </div>
-              </div>
 
-              {/* Defaults card */}
-              <div className="p-4 border rounded-xl bg-white">
-                <h3 className="font-medium mb-3 flex items-center gap-2"><MapPin className="w-4 h-4"/> Defaults (save once)</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div><Label>Office address 1</Label><Input placeholder="e.g., Google Sunnyvale" value={state.office1} onChange={e=>setState({...state, office1: e.target.value})} /></div>
-                  <div><Label>Office address 2</Label><Input placeholder="e.g., Salesforce Tower SF" value={state.office2} onChange={e=>setState({...state, office2: e.target.value})} /></div>
-                  <div><Label>Daycare address</Label><Input placeholder="e.g., KinderCare Sunnyvale" value={state.daycareAddress} onChange={e=>setState({...state, daycareAddress: e.target.value})} /></div>
-                  <div><Label>Badminton address</Label><Input placeholder="e.g., Bay Badminton" value={state.badmintonAddress} onChange={e=>setState({...state, badmintonAddress: e.target.value})} /></div>
-                </div>
-                <div className="mt-3">
-                  <Button onClick={saveDefaults}><Save className="w-4 h-4 mr-2"/> Save these as defaults</Button>
+                {/* Defaults */}
+                <div className="p-4 border rounded-xl bg-white">
+                  <h3 className="font-medium mb-3 flex items-center gap-2"><MapPin className="w-4 h-4"/> Defaults (save once)</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div><Label>Office address 1</Label><Input placeholder="e.g., Google Sunnyvale" value={state.office1} onChange={e=>setState({...state, office1: e.target.value})} /></div>
+                    <div><Label>Office address 2</Label><Input placeholder="e.g., Salesforce Tower SF" value={state.office2} onChange={e=>setState({...state, office2: e.target.value})} /></div>
+                    <div><Label>Daycare address</Label><Input placeholder="e.g., KinderCare Sunnyvale" value={state.daycareAddress} onChange={e=>setState({...state, daycareAddress: e.target.value})} /></div>
+                    <div><Label>Badminton address</Label><Input placeholder="e.g., Bay Badminton" value={state.badmintonAddress} onChange={e=>setState({...state, badmintonAddress: e.target.value})} /></div>
+                  </div>
+                  <div className="mt-3">
+                    <Button onClick={saveDefaults}><Save className="w-4 h-4 mr-2"/> Save these as defaults</Button>
+                  </div>
                 </div>
               </div>
             </CardContent>
@@ -373,6 +475,7 @@ export default function HouseDecisionDashboard() {
 
           {/* Results */}
           <div className="flex flex-col gap-6">
+            {/* Summary + DTI */}
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <Card className="shadow-md rounded-2xl">
                 <CardHeader><CardTitle className="flex items-center gap-2"><DollarSign className="w-5 h-5"/>Summary</CardTitle></CardHeader>
@@ -384,9 +487,47 @@ export default function HouseDecisionDashboard() {
                     <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">New Mortgage (est.)</div><div className="text-lg font-semibold">{currency(newMortgageMonthly)}</div></div>
                     <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">House Facing</div><div className="text-lg font-semibold flex items-center gap-2"><Compass className="w-4 h-4"/>{state.facing}</div></div>
                   </div>
+
+                  {/* DTI gauges */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="p-3 rounded-xl bg-white border">
+                      <div className="flex items-center justify-between">
+                        <div className="text-slate-500">Front-end ratio (PITI / Income)</div>
+                        <div className="text-sm font-medium">{pct(frontEndDTI)}</div>
+                      </div>
+                      <Progress value={frontEndDTI} />
+                      <div className="text-xs text-slate-500 mt-1">Guideline: ≤ 28%</div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white border">
+                      <div className="flex items-center justify-between">
+                        <div className="text-slate-500">Back-end ratio (Debts / Income)</div>
+                        <div className="text-sm font-medium">{pct(backEndDTI)}</div>
+                      </div>
+                      <Progress value={backEndDTI} />
+                      <div className="text-xs text-slate-500 mt-1">Guideline: ≤ 36%</div>
+                    </div>
+                  </div>
+
+                  {/* Stacked outflow */}
+                  <div className="h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart data={[{ name: "Monthly Outflows", ...Object.fromEntries(outflowStack.map(x => [x.name, x.value])) }]}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="name" />
+                        <YAxis />
+                        <Tooltip formatter={(v)=>currency(Number(v))} />
+                        <Legend />
+                        {outflowStack.map((seg) => (
+                          <Bar key={seg.name} dataKey={seg.name} stackId="a" />
+                        ))}
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* Income vs Outflow */}
                   <div className="h-52">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={expenseBreakdown}>
+                      <BarChart data={incomeVsOutflow}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="name" />
                         <YAxis />
@@ -400,49 +541,73 @@ export default function HouseDecisionDashboard() {
               </Card>
             </motion.div>
 
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-              <Card className="shadow-md rounded-2xl">
-                <CardHeader><CardTitle className="flex items-center gap-2"><DollarSign className="w-5 h-5"/>Income vs Outflow</CardTitle></CardHeader>
-                <CardContent>
-                  <div className="h-52">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={incomeVsOutflow}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="name" />
-                        <YAxis />
-                        <Tooltip formatter={(v)=>currency(Number(v))} />
-                        <Bar dataKey="value" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-
+            {/* Commute, Daycare & Schools */}
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <Card className="shadow-md rounded-2xl">
                 <CardHeader><CardTitle className="flex items-center gap-2"><MapPin className="w-5 h-5"/>Commute, Daycare & Schools</CardTitle></CardHeader>
                 <CardContent className="space-y-3 text-sm">
                   <div className="grid grid-cols-1 gap-2">
-                    <div className="p-3 rounded-xl bg-white border flex items-center justify-between"><div className="flex items-center gap-2"><Clock className="w-4 h-4"/>Office 1</div><div>{distance1 ? `${distance1.distanceText} • ${distance1.durationText}` : "—"}</div></div>
-                    <div className="p-3 rounded-xl bg-white border flex items-center justify-between"><div className="flex items-center gap-2"><Clock className="w-4 h-4"/>Office 2</div><div>{distance2 ? `${distance2.distanceText} • ${distance2.durationText}` : "—"}</div></div>
+                    <div className="p-3 rounded-xl bg-white border flex items-center justify-between">
+                      <div className="flex items-center gap-2"><Clock className="w-4 h-4"/>Office 1</div>
+                      <div>{distance1 ? `${distance1.distanceText} • ${distance1.durationText}` : "—"}</div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white border flex items-center justify-between">
+                      <div className="flex items-center gap-2"><Clock className="w-4 h-4"/>Office 2</div>
+                      <div>{distance2 ? `${distance2.distanceText} • ${distance2.durationText}` : "—"}</div>
+                    </div>
+
                     <div className="p-3 rounded-xl bg-white border">
-                      <div className="font-medium mb-1">KinderCare nearby</div>
+                      <div className="font-medium mb-1 flex items-center gap-2"><Baby className="w-4 h-4"/>KinderCare nearby</div>
+                      <div className="flex gap-2 mb-2">
+                        <Button onClick={handleKinderCare} disabled={!state.newAddress || loadingKinder}>
+                          {loadingKinder ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                          Refresh
+                        </Button>
+                      </div>
                       {kinderCares.length ? (
                         <ul className="list-disc pl-5">
-                          {kinderCares.map((k, i) => <li key={i}>{k.name} — <span className="text-slate-600">{k.vicinity}</span></li>)}
-                        </ul>
-                      ) : (<div className="text-slate-500">—</div>)}
-                    </div>
-                    <div className="p-3 rounded-xl bg-white border">
-                      <div className="font-medium mb-1">Assigned schools (from Redfin)</div>
-                      {Array.isArray(state.assignedSchools) && state.assignedSchools.length ? (
-                        <ul className="list-disc pl-5">
-                          {state.assignedSchools.map((s: any, i: number) => (
-                            <li key={i}><span className="font-medium">{s.name}</span>{s.level ? ` (${s.level})` : ""}{typeof s.rating === "number" ? ` — ${s.rating}/10` : ""}</li>
+                          {kinderCares.map((k, i) => (
+                            <li key={i}>{k.name} — <span className="text-slate-600">{k.vicinity}</span></li>
                           ))}
                         </ul>
-                      ) : (<div className="text-slate-500">Use “Fetch details”.</div>)}
+                      ) : (
+                        <div className="text-slate-500">No KinderCare found in Text/Nearby search yet.</div>
+                      )}
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white border">
+                      <div className="font-medium mb-1 flex items-center gap-2"><School className="w-4 h-4"/>Schools</div>
+                      {Array.isArray(state.assignedSchools) && state.assignedSchools.length ? (
+                        <>
+                          <div className="text-slate-500 mb-1">Assigned (via listing)</div>
+                          <ul className="list-disc pl-5 mb-2">
+                            {state.assignedSchools.map((s: any, i: number) => (
+                              <li key={i}><span className="font-medium">{s.name}</span>{s.level ? ` (${s.level})` : ""}{typeof s.rating === "number" ? ` — ${s.rating}/10` : ""}</li>
+                            ))}
+                          </ul>
+                        </>
+                      ) : null}
+
+                      <div className="flex items-center justify-between">
+                        <div className="text-slate-500">Nearest schools (approx, via Places)</div>
+                        <Button size="sm" variant="outline" onClick={async () => {
+                          const s = await findNearbySchools(state.newAddress);
+                          if (s?.length) setState((prev: any) => ({ ...prev, nearbySchools: s }));
+                        }} disabled={!state.newAddress || loadingSchools}>
+                          {loadingSchools ? <Loader2 className="w-3 h-3 mr-2 animate-spin" /> : null}
+                          Refresh
+                        </Button>
+                      </div>
+                      {state.nearbySchools?.length ? (
+                        <ul className="list-disc pl-5 mt-2">
+                          {state.nearbySchools.map((s: any, i: number) => (
+                            <li key={i}><span className="font-medium">{s.level}:</span> {s.name}{s.vicinity ? ` — ${s.vicinity}` : ""}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div className="text-slate-500">No nearby schools loaded yet.</div>
+                      )}
+                      <div className="text-xs text-slate-500 mt-1">Note: “Assigned” requires district attendance boundaries. Nearby schools are an approximation; verify with the district.</div>
                     </div>
                   </div>
                 </CardContent>
@@ -457,12 +622,12 @@ export default function HouseDecisionDashboard() {
             <pre className="whitespace-pre-wrap break-words">{JSON.stringify({
               lastRedfinReq, lastRedfinRes, lastGoogleReq, lastGoogleRes
             }, null, 2)}</pre>
-            <div className="text-slate-500 mt-2">Tip: For server logs, open Vercel → Project → Functions and check the latest invocation for <code>/api/google</code> or <code>/api/redfin</code>.</div>
+            <div className="text-slate-500 mt-2">Server logs: Vercel → Project → Functions → check /api/google and /api/redfin.</div>
           </div>
         )}
 
         <div className="mt-8 text-xs text-slate-500 leading-relaxed">
-          <p><strong>Notes:</strong> Redfin has no public API; this scraper handles common patterns but some listings lazy-load content—manual fields are available as fallback.</p>
+          <p><strong>Notes:</strong> When listings block scrapes, we still resolve address and distances. For official assigned schools and exact property facts, verify with your local district and county records.</p>
         </div>
       </div>
     </div>
