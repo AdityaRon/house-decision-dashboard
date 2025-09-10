@@ -1,8 +1,7 @@
 // app/api/redfin/route.ts
-import * as cheerio from "cheerio";
+// Cheerio-free Redfin extractor (Edge runtime safe)
 
-// Cheerio uses Node APIs, so prefer Node runtime.
-export const runtime = "nodejs";
+export const runtime = "edge";
 
 type School = { name: string; rating?: number; level?: string };
 type Out = {
@@ -14,6 +13,11 @@ type Out = {
   debug?: any;
 };
 
+// ---------- helpers ----------
+function numOrNull(v: any): number | null {
+  const n = typeof v === "string" ? Number(v.replace(/[, ]/g, "")) : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 function toFacing(token?: string | null): string | null {
   if (!token) return null;
   const t = token.toLowerCase();
@@ -28,12 +32,6 @@ function toFacing(token?: string | null): string | null {
   if (t.startsWith("west")) return "W";
   return "Unknown";
 }
-
-function numOrNull(v: any): number | null {
-  const n = typeof v === "string" ? Number(v.replace(/[, ]/g, "")) : Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
 function deepFind(obj: any, pred: (k: string, v: any) => boolean, acc: any[] = []): any[] {
   if (!obj || typeof obj !== "object") return acc;
   for (const [k, v] of Object.entries(obj)) {
@@ -44,7 +42,37 @@ function deepFind(obj: any, pred: (k: string, v: any) => boolean, acc: any[] = [
   }
   return acc;
 }
+function stripHtmlToText(html: string): string {
+  // remove scripts/styles, then tags, collapse whitespace
+  const noScripts = html.replace(/<script[\s\S]*?<\/script>/gi, "");
+  const noStyles = noScripts.replace(/<style[\s\S]*?<\/style>/gi, "");
+  const noTags = noStyles.replace(/<[^>]+>/g, " ");
+  // very light entity handling for the common ones
+  return noTags
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+function* extractJsonLd(html: string): Generator<any> {
+  const re = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const raw = m[1].trim();
+    try {
+      const json = JSON.parse(raw);
+      if (Array.isArray(json)) {
+        for (const x of json) yield x;
+      } else {
+        yield json;
+      }
+    } catch {}
+  }
+}
 
+// ---------- API ----------
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const target = searchParams.get("url");
@@ -55,7 +83,13 @@ export async function GET(req: Request) {
     });
   }
 
-  const out: Out = { address: null, livingAreaSqft: null, lotSizeSqft: null, facing: null, schools: [] };
+  const out: Out = {
+    address: null,
+    livingAreaSqft: null,
+    lotSizeSqft: null,
+    facing: null,
+    schools: [],
+  };
   const debug: any = { target };
 
   try {
@@ -69,30 +103,26 @@ export async function GET(req: Request) {
     });
     debug.status = htmlRes.status;
     debug.ok = htmlRes.ok;
-    const html = await htmlRes.text();
-    const $ = cheerio.load(html);
 
-    // -------- 1) JSON-LD blocks --------
-    $('script[type="application/ld+json"]').each((_, el) => {
+    const html = await htmlRes.text();
+    const text = stripHtmlToText(html);
+
+    // ---- 1) JSON-LD (address, sizes if present) ----
+    for (const obj of extractJsonLd(html)) {
       try {
-        const raw = $(el).contents().text();
-        const json = JSON.parse(raw);
-        const arr = Array.isArray(json) ? json : [json];
-        for (const obj of arr) {
-          if (obj["@type"] === "SingleFamilyResidence" || obj["@type"] === "Residence" || obj["@type"] === "House") {
-            if (!out.address && obj.address) {
-              const a = obj.address;
-              out.address = [a.streetAddress, a.addressLocality, a.addressRegion, a.postalCode]
-                .filter(Boolean).join(", ");
-            }
-            if (!out.livingAreaSqft && obj.floorSize?.value) out.livingAreaSqft = numOrNull(obj.floorSize.value);
-            if (!out.lotSizeSqft && obj.lotSize?.value) out.lotSizeSqft = numOrNull(obj.lotSize.value);
+        if (obj && (obj["@type"] === "SingleFamilyResidence" || obj["@type"] === "Residence" || obj["@type"] === "House")) {
+          if (!out.address && obj.address) {
+            const a = obj.address;
+            out.address = [a.streetAddress, a.addressLocality, a.addressRegion, a.postalCode]
+              .filter(Boolean).join(", ");
           }
+          if (!out.livingAreaSqft && obj.floorSize?.value) out.livingAreaSqft = numOrNull(obj.floorSize.value);
+          if (!out.lotSizeSqft && obj.lotSize?.value) out.lotSizeSqft = numOrNull(obj.lotSize.value);
         }
       } catch {}
-    });
+    }
 
-    // -------- 2) __REDUX_STATE__ JSON blob (if present) --------
+    // ---- 2) __REDUX_STATE__ (Redfin often embeds a big JSON) ----
     const reduxMatch = html.match(/__REDUX_STATE__\s*=\s*({[\s\S]*?});/);
     if (reduxMatch) {
       try {
@@ -107,26 +137,22 @@ export async function GET(req: Request) {
             if (addr) { out.address = addr; break; }
           }
         }
-
         if (!out.livingAreaSqft) {
           const areas = deepFind(reduxJson, (k, v) =>
             /living.?sq|living.?area|finished.?sq.?ft|sq.?ft|square.?feet/i.test(k) &&
             (typeof v === "number" || typeof v === "string"));
           out.livingAreaSqft = numOrNull(areas.find((x: any) => numOrNull(x)));
         }
-
         if (!out.lotSizeSqft) {
           const lots = deepFind(reduxJson, (k, v) =>
             /lot.?size|lot.?area|lot.?sq.?ft/i.test(k) &&
             (typeof v === "number" || typeof v === "string"));
           out.lotSizeSqft = numOrNull(lots.find((x: any) => numOrNull(x)));
         }
-
         if (!out.facing) {
           const faceTokens = deepFind(reduxJson, (k, v) => /facing|orientation/i.test(k) && typeof v === "string");
           out.facing = toFacing(faceTokens.find(Boolean) || null);
         }
-
         if (!out.schools.length) {
           const schoolNodes = deepFind(reduxJson, (k, v) => /school/i.test(k) && Array.isArray(v));
           for (const arr of schoolNodes) {
@@ -149,13 +175,8 @@ export async function GET(req: Request) {
       } catch {}
     }
 
-    // -------- 3) Fallback: scan visible page text --------
-    const text = $("body").text();
-
-    // Example variants:
-    //  - "Living Sq. Ft.: 1,714"
-    //  - "Living Area: 1,714"
-    //  - "Square Feet 1,714"
+    // ---- 3) Fallback: scan visible page text ----
+    // Living area: “Living Sq. Ft.: 1,714”, “Living Area: 1,714”, or “Square Feet: 1,714”
     if (!out.livingAreaSqft) {
       const m =
         text.match(/Living\s*Sq\.?\s*Ft\.?\s*[:\-]?\s*([\d,]{3,7})/i) ||
@@ -164,9 +185,7 @@ export async function GET(req: Request) {
       if (m) out.livingAreaSqft = numOrNull(m[1]);
     }
 
-    // Example variants:
-    //  - "Lot Size: 673 square feet"
-    //  - "Lot Size (sq ft): 5,000"
+    // Lot size: “Lot Size: 673 square feet” or “Lot Size (sq ft): 5,000”
     if (!out.lotSizeSqft) {
       const m =
         text.match(/Lot\s*Size\s*[:\-]?\s*([\d,]{2,7})\s*(?:sq\.?\s*ft|square\s*feet)/i) ||
@@ -190,12 +209,10 @@ export async function GET(req: Request) {
       while ((a = reA.exec(text)) !== null) {
         const rating = numOrNull(a[1]) ?? undefined;
         const fullName = a[2].trim();
-        // Extract level from the end of the name if present
         const levelMatch = fullName.match(/\b(Elementary|Middle|High)\s+School\b/i);
         const level = levelMatch?.[1];
         temp.push({ name: fullName, level, rating });
       }
-
       const reB = /(Elementary|Middle|High)\s*School\s*[:\-\s]*([^\n]+?)\s*(?:GreatSchools\s*Rating\s*(\d{1,2})\s*\/\s*10)?/gi;
       let b: RegExpExecArray | null;
       while ((b = reB.exec(text)) !== null) {
@@ -204,7 +221,6 @@ export async function GET(req: Request) {
         const rating = numOrNull(b[3]) ?? undefined;
         temp.push({ name, level, rating });
       }
-
       const seen = new Set<string>();
       out.schools = temp.filter((s) => {
         const key = (s.level || "") + "|" + s.name.toLowerCase();
@@ -214,9 +230,21 @@ export async function GET(req: Request) {
       });
     }
 
-    out.debug = { ...debug, extracted: { address: out.address, livingAreaSqft: out.livingAreaSqft, lotSizeSqft: out.lotSizeSqft, facing: out.facing, schoolsCount: out.schools.length } };
-    console.log("[/api/redfin] success", out.debug);
-    return new Response(JSON.stringify(out), { status: 200, headers: { "content-type": "application/json" } });
+    out.debug = {
+      ...debug,
+      extracted: {
+        address: out.address,
+        livingAreaSqft: out.livingAreaSqft,
+        lotSizeSqft: out.lotSizeSqft,
+        facing: out.facing,
+        schoolsCount: out.schools.length,
+      },
+    };
+    console.log("[/api/redfin] success", out.debug); // View in Vercel → Functions logs
+    return new Response(JSON.stringify(out), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
   } catch (e: any) {
     console.log("[/api/redfin] error", { target, message: String(e?.message || e) });
     return new Response(JSON.stringify({ error: "Scrape failed", details: String(e?.message || e) }), {
