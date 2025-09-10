@@ -10,7 +10,6 @@ export async function GET(req: Request) {
   const path = searchParams.get("path") || "";
   const qs = searchParams.get("qs") || "";
 
-  // Allow Find Place so fuzzy names work
   const allow = ["distancematrix", "geocode", "place/nearbysearch", "place/findplacefromtext"];
   if (!allow.some((p) => path.startsWith(p))) {
     console.log("[/api/google] blocked path", { path });

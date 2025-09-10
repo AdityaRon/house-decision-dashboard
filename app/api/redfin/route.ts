@@ -1,7 +1,8 @@
 // app/api/redfin/route.ts
 import * as cheerio from "cheerio";
 
-export const runtime = "edge";
+// Cheerio uses Node APIs, so prefer Node runtime.
+export const runtime = "nodejs";
 
 type School = { name: string; rating?: number; level?: string };
 type Out = {
@@ -48,7 +49,10 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const target = searchParams.get("url");
   if (!target) {
-    return new Response(JSON.stringify({ error: "Missing url" }), { status: 400, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({ error: "Missing url" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
   }
 
   const out: Out = { address: null, livingAreaSqft: null, lotSizeSqft: null, facing: null, schools: [] };
@@ -56,7 +60,6 @@ export async function GET(req: Request) {
 
   try {
     const htmlRes = await fetch(target, {
-      // Be explicit about headers; some CDNs gate on UA/lang.
       headers: {
         "User-Agent": "Mozilla/5.0 (house-dashboard)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -69,7 +72,7 @@ export async function GET(req: Request) {
     const html = await htmlRes.text();
     const $ = cheerio.load(html);
 
-    // -------- 1) JSON-LD --------
+    // -------- 1) JSON-LD blocks --------
     $('script[type="application/ld+json"]').each((_, el) => {
       try {
         const raw = $(el).contents().text();
@@ -79,7 +82,8 @@ export async function GET(req: Request) {
           if (obj["@type"] === "SingleFamilyResidence" || obj["@type"] === "Residence" || obj["@type"] === "House") {
             if (!out.address && obj.address) {
               const a = obj.address;
-              out.address = [a.streetAddress, a.addressLocality, a.addressRegion, a.postalCode].filter(Boolean).join(", ");
+              out.address = [a.streetAddress, a.addressLocality, a.addressRegion, a.postalCode]
+                .filter(Boolean).join(", ");
             }
             if (!out.livingAreaSqft && obj.floorSize?.value) out.livingAreaSqft = numOrNull(obj.floorSize.value);
             if (!out.lotSizeSqft && obj.lotSize?.value) out.lotSizeSqft = numOrNull(obj.lotSize.value);
@@ -88,8 +92,8 @@ export async function GET(req: Request) {
       } catch {}
     });
 
-    // -------- 2) __REDUX_STATE__ blob (if present) --------
-    const reduxMatch = html.match(/__REDUX_STATE__\s*=\s*(\{[\s\S]*?\});/);
+    // -------- 2) __REDUX_STATE__ JSON blob (if present) --------
+    const reduxMatch = html.match(/__REDUX_STATE__\s*=\s*({[\s\S]*?});/);
     if (reduxMatch) {
       try {
         const reduxJson = JSON.parse(reduxMatch[1]);
@@ -105,12 +109,16 @@ export async function GET(req: Request) {
         }
 
         if (!out.livingAreaSqft) {
-          const areas = deepFind(reduxJson, (k, v) => /living.?area|finished.?sq.?ft|sq.?ft|square.?feet/i.test(k) && (typeof v === "number" || typeof v === "string"));
+          const areas = deepFind(reduxJson, (k, v) =>
+            /living.?sq|living.?area|finished.?sq.?ft|sq.?ft|square.?feet/i.test(k) &&
+            (typeof v === "number" || typeof v === "string"));
           out.livingAreaSqft = numOrNull(areas.find((x: any) => numOrNull(x)));
         }
 
         if (!out.lotSizeSqft) {
-          const lots = deepFind(reduxJson, (k, v) => /lot.?size|lot.?area|lot.?sq.?ft/i.test(k) && (typeof v === "number" || typeof v === "string"));
+          const lots = deepFind(reduxJson, (k, v) =>
+            /lot.?size|lot.?area|lot.?sq.?ft/i.test(k) &&
+            (typeof v === "number" || typeof v === "string"));
           out.lotSizeSqft = numOrNull(lots.find((x: any) => numOrNull(x)));
         }
 
@@ -130,7 +138,6 @@ export async function GET(req: Request) {
               out.schools.push({ name, level, rating });
             }
           }
-          // de-dup
           const seen = new Set<string>();
           out.schools = out.schools.filter((s) => {
             const key = (s.level || "") + "|" + s.name.toLowerCase();
@@ -145,46 +152,59 @@ export async function GET(req: Request) {
     // -------- 3) Fallback: scan visible page text --------
     const text = $("body").text();
 
-    // Matches "Living Sq. Ft.: 1,714" (exact phrasing on your link)
+    // Example variants:
+    //  - "Living Sq. Ft.: 1,714"
+    //  - "Living Area: 1,714"
+    //  - "Square Feet 1,714"
     if (!out.livingAreaSqft) {
-      const m = text.match(/Living\\s*Sq\\.?\\s*Ft\\.?\\s*[:\\-]?\\s*(\\d{3,7})/i)
-        || text.match(/(?:Living\\s*Area|Square\\s*Feet)[^\\d]*(\\d{3,7})/i);
+      const m =
+        text.match(/Living\s*Sq\.?\s*Ft\.?\s*[:\-]?\s*([\d,]{3,7})/i) ||
+        text.match(/Living\s*Area\s*[:\-]?\s*([\d,]{3,7})/i) ||
+        text.match(/Square\s*Feet\s*[:\-]?\s*([\d,]{3,7})/i);
       if (m) out.livingAreaSqft = numOrNull(m[1]);
     }
 
-    // Matches "Lot Size: 673 square feet"
+    // Example variants:
+    //  - "Lot Size: 673 square feet"
+    //  - "Lot Size (sq ft): 5,000"
     if (!out.lotSizeSqft) {
-      const m = text.match(/Lot\\s*Size\\s*[:\\-]?\\s*(\\d{2,7})\\s*(?:sq\\.?\\s*ft|square\\s*feet)/i);
+      const m =
+        text.match(/Lot\s*Size\s*[:\-]?\s*([\d,]{2,7})\s*(?:sq\.?\s*ft|square\s*feet)/i) ||
+        text.match(/Lot\s*Size\s*\(sq\s*ft\)\s*[:\-]?\s*([\d,]{2,7})/i);
       if (m) out.lotSizeSqft = numOrNull(m[1]);
     }
 
     // Facing
     if (!out.facing) {
-      const m = text.match(/(?:Faces|Facing|Direction\\s*Faces?)\\s*[:\\-]?\\s*(North(?:east)?|South(?:east)?|East|West|South(?:west)?|North(?:west)?)/i);
+      const m = text.match(/(?:Faces|Facing|Direction\s*Faces?)\s*[:\-]?\s*(North(?:east)?|South(?:east)?|East|West|South(?:west)?|North(?:west)?)/i);
       out.facing = toFacing(m?.[1] ?? null);
     }
 
-    // Schools — also support pattern: "5/10 <School Name>" (GreatSchools)
+    // Schools:
+    // A) "5/10 Millard Mccollam Elementary School"
+    // B) "Elementary School: Millard Mccollam ... GreatSchools Rating 5/10"
     if (!out.schools.length) {
       const temp: School[] = [];
-      // A) "5/10 Millard Mccollam Elementary School"
-      const reA = /(\\d{1,2})\\s*\\/\\s*10\\s+([A-Za-z0-9 .,'-]+?(Elementary|Middle|High) School)/gi;
+      const reA = /(\d{1,2})\s*\/\s*10\s+([A-Za-z0-9 .,'\-]+?(?:Elementary|Middle|High)\s+School)/gi;
       let a: RegExpExecArray | null;
       while ((a = reA.exec(text)) !== null) {
         const rating = numOrNull(a[1]) ?? undefined;
         const fullName = a[2].trim();
-        const level = (a[3] || "").trim() || undefined;
+        // Extract level from the end of the name if present
+        const levelMatch = fullName.match(/\b(Elementary|Middle|High)\s+School\b/i);
+        const level = levelMatch?.[1];
         temp.push({ name: fullName, level, rating });
       }
-      // B) "<Level> School: Name ... GreatSchools Rating 6/10"
-      const reB = /(Elementary|Middle|High)\\s*School\\s*[:\\-\\s]*([^\\n]+?)\\s*(?:GreatSchools\\s*Rating\\s*(\\d{1,2})\\s*\\/\\s*10)?/gi;
+
+      const reB = /(Elementary|Middle|High)\s*School\s*[:\-\s]*([^\n]+?)\s*(?:GreatSchools\s*Rating\s*(\d{1,2})\s*\/\s*10)?/gi;
       let b: RegExpExecArray | null;
       while ((b = reB.exec(text)) !== null) {
         const level = b[1];
-        const name = b[2].trim().replace(/\\s{2,}/g, " ");
+        const name = b[2].trim().replace(/\s{2,}/g, " ");
         const rating = numOrNull(b[3]) ?? undefined;
         temp.push({ name, level, rating });
       }
+
       const seen = new Set<string>();
       out.schools = temp.filter((s) => {
         const key = (s.level || "") + "|" + s.name.toLowerCase();
@@ -195,9 +215,8 @@ export async function GET(req: Request) {
     }
 
     out.debug = { ...debug, extracted: { address: out.address, livingAreaSqft: out.livingAreaSqft, lotSizeSqft: out.lotSizeSqft, facing: out.facing, schoolsCount: out.schools.length } };
-    console.log("[/api/redfin] success", out.debug); // <-- Vercel function logs
+    console.log("[/api/redfin] success", out.debug);
     return new Response(JSON.stringify(out), { status: 200, headers: { "content-type": "application/json" } });
-
   } catch (e: any) {
     console.log("[/api/redfin] error", { target, message: String(e?.message || e) });
     return new Response(JSON.stringify({ error: "Scrape failed", details: String(e?.message || e) }), {

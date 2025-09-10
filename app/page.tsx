@@ -28,25 +28,31 @@ function decodeState(s: string) { try { return JSON.parse(decodeURIComponent(esc
 
 export default function HouseDecisionDashboard() {
   const [state, setState] = useState<any>(() => ({
+    // New house
     newPrice: 1000000, newDownPct: 20, newRatePct: 6.5, newYears: 30,
     newPropTaxMonthly: 900, newHOAMonthly: 0, newInsuranceMonthly: 150,
+    // Existing house (to rent)
     existingMortgageMonthly: 3000, existingPropTaxMonthly: 500, existingHOAMonthly: 0, expectedRentMonthly: 3500,
+    // Expenses
     expCars: 800, expFood: 1200, expDaycare: 1800, expElectricity: 200, expWater: 80, expMisc: 600,
+    // Income (semi-monthly)
     p1SemiMonthly: 5000, p2SemiMonthly: 4000,
+    // Addresses
     redfinUrl: "", newAddress: "",
     office1: "", office2: "", daycareAddress: "", badmintonAddress: "",
+    // Property details
     livingAreaSqft: "", lotSizeSqft: "", facing: "Unknown",
     assignedSchools: [] as { name: string; rating?: number | null; level?: string }[],
   }));
 
-  // Debug state
+  // Debug
   const [debug, setDebug] = useState(false);
   const [lastRedfinReq, setLastRedfinReq] = useState<any>(null);
   const [lastRedfinRes, setLastRedfinRes] = useState<any>(null);
   const [lastGoogleReq, setLastGoogleReq] = useState<any>(null);
   const [lastGoogleRes, setLastGoogleRes] = useState<any>(null);
 
-  // On load: URL state + local defaults
+  // Load state + defaults
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const s = q.get("s");
@@ -72,7 +78,7 @@ export default function HouseDecisionDashboard() {
   }, []);
   useEffect(() => { localStorage.setItem("house-dashboard", JSON.stringify(state)); }, [state]);
 
-  // Derived numbers
+  // Derived
   const newMortgageMonthly = useMemo(() => monthlyMortgage({ price: num(state.newPrice), downPct: num(state.newDownPct), ratePct: num(state.newRatePct), years: num(state.newYears, 30) }), [state.newPrice, state.newDownPct, state.newRatePct, state.newYears]);
   const newHouseCarrying = useMemo(() => newMortgageMonthly + num(state.newPropTaxMonthly) + num(state.newHOAMonthly) + num(state.newInsuranceMonthly), [newMortgageMonthly, state.newPropTaxMonthly, state.newHOAMonthly, state.newInsuranceMonthly]);
   const existingNet = useMemo(() => (num(state.existingMortgageMonthly) + num(state.existingPropTaxMonthly) + num(state.existingHOAMonthly)) - num(state.expectedRentMonthly), [state.existingMortgageMonthly, state.existingPropTaxMonthly, state.existingHOAMonthly, state.expectedRentMonthly]);
@@ -110,7 +116,7 @@ export default function HouseDecisionDashboard() {
 
   async function placeIdFor(input: string): Promise<string | null> {
     if (!input) return null;
-    // Find place first (handles fuzzy names)
+    // Find Place (handles fuzzy names)
     {
       const { data } = await callGoogle("place/findplacefromtext", { input, inputtype: "textquery", fields: "place_id" });
       const pid = data?.candidates?.[0]?.place_id;
@@ -138,7 +144,6 @@ export default function HouseDecisionDashboard() {
   }
 
   async function findKinderCare(addressText: string) {
-    // We need lat/lng; geocode is enough here
     const { data: g } = await callGoogle("geocode", { address: addressText });
     const loc = g?.results?.[0]?.geometry?.location;
     if (!loc) return [] as any[];
@@ -236,6 +241,205 @@ export default function HouseDecisionDashboard() {
         </div>
 
         <div className="grid gap-6 grid-cols-1 lg:grid-cols-3">
-          {/* Inputs (unchanged parts omitted for brevity) */}
-          {/* ... keep your current inputs, including Redfin/Parse/Fetch buttons ... */}
-          {/* Replace your existing content with the version I sent earlier if needed */}
+          {/* Inputs */}
+          <Card className="col-span-2 shadow-md rounded-2xl">
+            <CardHeader><CardTitle className="flex items-center gap-2"><DollarSign className="w-5 h-5"/>Inputs</CardTitle></CardHeader>
+            <CardContent className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="p-4 border rounded-xl bg-white">
+                  <h3 className="font-medium mb-3 flex items-center gap-2"><Building2 className="w-4 h-4"/> New House</h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><Label>Current home price</Label><Input value={state.newPrice} onChange={e=>setState({...state, newPrice: e.target.value})} /></div>
+                    <div><Label>Down payment (%)</Label><Input value={state.newDownPct} onChange={e=>setState({...state, newDownPct: e.target.value})} /></div>
+                    <div><Label>Expected rate (%)</Label><Input value={state.newRatePct} onChange={e=>setState({...state, newRatePct: e.target.value})} /></div>
+                    <div><Label>Term (years)</Label><Input value={state.newYears} onChange={e=>setState({...state, newYears: e.target.value})} /></div>
+                    <div><Label>Property tax (monthly)</Label><Input value={state.newPropTaxMonthly} onChange={e=>setState({...state, newPropTaxMonthly: e.target.value})} /></div>
+                    <div><Label>HOA (monthly)</Label><Input value={state.newHOAMonthly} onChange={e=>setState({...state, newHOAMonthly: e.target.value})} /></div>
+                    <div><Label>Insurance (monthly)</Label><Input value={state.newInsuranceMonthly} onChange={e=>setState({...state, newInsuranceMonthly: e.target.value})} /></div>
+                    <div className="col-span-2">
+                      <Separator className="my-2"/>
+                      <Label>Redfin link</Label>
+                      <div className="flex gap-2">
+                        <Input placeholder="https://www.redfin.com/..." value={state.redfinUrl} onChange={e=>setState({...state, redfinUrl: e.target.value})} />
+                        <Button type="button" variant="secondary" onClick={parseRedfinUrl} disabled={!state.redfinUrl || parsingAddress}>
+                          {parsingAddress ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : null}
+                          Parse address
+                        </Button>
+                        <Button type="button" onClick={fetchRedfinDetails} disabled={!state.redfinUrl || loadingRedfin}>
+                          {loadingRedfin ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : null}
+                          Fetch details
+                        </Button>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Serverless “/api/redfin” extracts address, facing, lot size, living area & assigned schools (when available).
+                      </p>
+
+                      <div className="mt-2 grid grid-cols-2 gap-3">
+                        <div className="col-span-2">
+                          <Label>New house address</Label>
+                          <Input placeholder="123 Main St, City, ST" value={state.newAddress} onChange={e=>setState({...state, newAddress: e.target.value})} />
+                        </div>
+                        <div>
+                          <Label>Facing direction</Label>
+                          <select className="w-full p-2 border rounded-md" value={state.facing} onChange={e=>setState({...state, facing: e.target.value})}>
+                            {["N","NE","E","SE","S","SW","W","NW","Unknown"].map(d => <option key={d} value={d}>{d}</option>)}
+                          </select>
+                        </div>
+                        <div><Label>Living area (sqft)</Label><Input value={state.livingAreaSqft} onChange={e=>setState({...state, livingAreaSqft: e.target.value})} /></div>
+                        <div><Label>Lot size (sqft)</Label><Input value={state.lotSizeSqft} onChange={e=>setState({...state, lotSizeSqft: e.target.value})} /></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-4 border rounded-xl bg-white">
+                  <h3 className="font-medium mb-3 flex items-center gap-2"><Home className="w-4 h-4"/> Existing House (to rent)</h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><Label>Mortgage (monthly)</Label><Input value={state.existingMortgageMonthly} onChange={e=>setState({...state, existingMortgageMonthly: e.target.value})} /></div>
+                    <div><Label>Property tax (monthly)</Label><Input value={state.existingPropTaxMonthly} onChange={e=>setState({...state, existingPropTaxMonthly: e.target.value})} /></div>
+                    <div><Label>HOA (monthly)</Label><Input value={state.existingHOAMonthly} onChange={e=>setState({...state, existingHOAMonthly: e.target.value})} /></div>
+                    <div><Label>Expected rent (monthly)</Label><Input value={state.expectedRentMonthly} onChange={e=>setState({...state, expectedRentMonthly: e.target.value})} /></div>
+                    <div className="col-span-2 bg-slate-50 rounded-lg p-2 text-sm">
+                      Net from existing = (mortgage + tax + HOA) − rent = <strong className="ml-1">{currency(existingNet)}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-4 border rounded-xl bg-white">
+                  <h3 className="font-medium mb-3 flex items-center gap-2"><DollarSign className="w-4 h-4"/> Income</h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><Label>Partner 1 (semi-monthly)</Label><Input value={state.p1SemiMonthly} onChange={e=>setState({...state, p1SemiMonthly: e.target.value})} /></div>
+                    <div><Label>Partner 2 (semi-monthly)</Label><Input value={state.p2SemiMonthly} onChange={e=>setState({...state, p2SemiMonthly: e.target.value})} /></div>
+                    <div className="col-span-2 bg-slate-50 rounded-lg p-2 text-sm">
+                      Monthly gross income (×2) = <strong className="ml-1">{currency(grossIncome)}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-4 border rounded-xl bg-white">
+                  <h3 className="font-medium mb-3 flex items-center gap-2"><Activity className="w-4 h-4"/> Expenses (monthly)</h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><Label>Cars</Label><Input value={state.expCars} onChange={e=>setState({...state, expCars: e.target.value})} /></div>
+                    <div><Label>Food</Label><Input value={state.expFood} onChange={e=>setState({...state, expFood: e.target.value})} /></div>
+                    <div><Label>Daycare</Label><Input value={state.expDaycare} onChange={e=>setState({...state, expDaycare: e.target.value})} /></div>
+                    <div><Label>Electricity</Label><Input value={state.expElectricity} onChange={e=>setState({...state, expElectricity: e.target.value})} /></div>
+                    <div><Label>Water</Label><Input value={state.expWater} onChange={e=>setState({...state, expWater: e.target.value})} /></div>
+                    <div><Label>Misc</Label><Input value={state.expMisc} onChange={e=>setState({...state, expMisc: e.target.value})} /></div>
+                    <div className="col-span-2 bg-slate-50 rounded-lg p-2 text-sm">Total living expenses = <strong className="ml-1">{currency(livingExpenses)}</strong></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Defaults card */}
+              <div className="p-4 border rounded-xl bg-white">
+                <h3 className="font-medium mb-3 flex items-center gap-2"><MapPin className="w-4 h-4"/> Defaults (save once)</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div><Label>Office address 1</Label><Input placeholder="e.g., Google Sunnyvale" value={state.office1} onChange={e=>setState({...state, office1: e.target.value})} /></div>
+                  <div><Label>Office address 2</Label><Input placeholder="e.g., Salesforce Tower SF" value={state.office2} onChange={e=>setState({...state, office2: e.target.value})} /></div>
+                  <div><Label>Daycare address</Label><Input placeholder="e.g., KinderCare Sunnyvale" value={state.daycareAddress} onChange={e=>setState({...state, daycareAddress: e.target.value})} /></div>
+                  <div><Label>Badminton address</Label><Input placeholder="e.g., Bay Badminton" value={state.badmintonAddress} onChange={e=>setState({...state, badmintonAddress: e.target.value})} /></div>
+                </div>
+                <div className="mt-3">
+                  <Button onClick={saveDefaults}><Save className="w-4 h-4 mr-2"/> Save these as defaults</Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Results */}
+          <div className="flex flex-col gap-6">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <Card className="shadow-md rounded-2xl">
+                <CardHeader><CardTitle className="flex items-center gap-2"><DollarSign className="w-5 h-5"/>Summary</CardTitle></CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">Total Income</div><div className="text-lg font-semibold">{currency(grossIncome)}</div></div>
+                    <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">Total Expenses (outflow)</div><div className="text-lg font-semibold">{currency(totalExpenses)}</div></div>
+                    <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">Remaining Income</div><div className={`text-lg font-semibold ${remainingIncome >= 0 ? "text-emerald-700" : "text-rose-700"}`}>{currency(remainingIncome)}</div></div>
+                    <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">New Mortgage (est.)</div><div className="text-lg font-semibold">{currency(newMortgageMonthly)}</div></div>
+                    <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">House Facing</div><div className="text-lg font-semibold flex items-center gap-2"><Compass className="w-4 h-4"/>{state.facing}</div></div>
+                  </div>
+                  <div className="h-52">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={expenseBreakdown}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="name" />
+                        <YAxis />
+                        <Tooltip formatter={(v)=>currency(Number(v))} />
+                        <Legend />
+                        <Bar dataKey="value" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <Card className="shadow-md rounded-2xl">
+                <CardHeader><CardTitle className="flex items-center gap-2"><DollarSign className="w-5 h-5"/>Income vs Outflow</CardTitle></CardHeader>
+                <CardContent>
+                  <div className="h-52">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={incomeVsOutflow}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="name" />
+                        <YAxis />
+                        <Tooltip formatter={(v)=>currency(Number(v))} />
+                        <Bar dataKey="value" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <Card className="shadow-md rounded-2xl">
+                <CardHeader><CardTitle className="flex items-center gap-2"><MapPin className="w-5 h-5"/>Commute, Daycare & Schools</CardTitle></CardHeader>
+                <CardContent className="space-y-3 text-sm">
+                  <div className="grid grid-cols-1 gap-2">
+                    <div className="p-3 rounded-xl bg-white border flex items-center justify-between"><div className="flex items-center gap-2"><Clock className="w-4 h-4"/>Office 1</div><div>{distance1 ? `${distance1.distanceText} • ${distance1.durationText}` : "—"}</div></div>
+                    <div className="p-3 rounded-xl bg-white border flex items-center justify-between"><div className="flex items-center gap-2"><Clock className="w-4 h-4"/>Office 2</div><div>{distance2 ? `${distance2.distanceText} • ${distance2.durationText}` : "—"}</div></div>
+                    <div className="p-3 rounded-xl bg-white border">
+                      <div className="font-medium mb-1">KinderCare nearby</div>
+                      {kinderCares.length ? (
+                        <ul className="list-disc pl-5">
+                          {kinderCares.map((k, i) => <li key={i}>{k.name} — <span className="text-slate-600">{k.vicinity}</span></li>)}
+                        </ul>
+                      ) : (<div className="text-slate-500">—</div>)}
+                    </div>
+                    <div className="p-3 rounded-xl bg-white border">
+                      <div className="font-medium mb-1">Assigned schools (from Redfin)</div>
+                      {Array.isArray(state.assignedSchools) && state.assignedSchools.length ? (
+                        <ul className="list-disc pl-5">
+                          {state.assignedSchools.map((s: any, i: number) => (
+                            <li key={i}><span className="font-medium">{s.name}</span>{s.level ? ` (${s.level})` : ""}{typeof s.rating === "number" ? ` — ${s.rating}/10` : ""}</li>
+                          ))}
+                        </ul>
+                      ) : (<div className="text-slate-500">Use “Fetch details”.</div>)}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+          </div>
+        </div>
+
+        {debug && (
+          <div className="mt-6 p-4 border rounded-xl bg-white text-xs overflow-auto max-h-80">
+            <div className="font-semibold mb-2">DEBUG</div>
+            <pre className="whitespace-pre-wrap break-words">{JSON.stringify({
+              lastRedfinReq, lastRedfinRes, lastGoogleReq, lastGoogleRes
+            }, null, 2)}</pre>
+            <div className="text-slate-500 mt-2">Tip: For server logs, open Vercel → Project → Functions and check the latest invocation for <code>/api/google</code> or <code>/api/redfin</code>.</div>
+          </div>
+        )}
+
+        <div className="mt-8 text-xs text-slate-500 leading-relaxed">
+          <p><strong>Notes:</strong> Redfin has no public API; this scraper handles common patterns but some listings lazy-load content—manual fields are available as fallback.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
