@@ -1,29 +1,28 @@
-# House Decision Dashboard
+# House Decision Dashboard (v2)
 
-Home-buying numbers + logistics in one place: mortgage + taxes + HOA + rental delta, expense donut, income vs outflow, commute to offices, nearby KinderCare, plus Redfin details (lot size, living area, facing, assigned schools).
+Home-buying numbers + logistics in one place. v2 adds:
+- **Estimate Facing (experimental)** — infers facing by geocoding the address then finding the nearest road via OpenStreetMap and taking the bearing from the house to the road.
+- **Compare Scenarios** — save multiple scenarios locally and view a side-by-side comparison at `/compare`.
 
 ## Quick Start
-
 ```bash
 npm install
+echo "GOOGLE_MAPS_API_KEY=YOUR_KEY" > .env.local
 npm run dev
 # open http://localhost:3000
 ```
 
-Create `.env.local` with:
-```
-GOOGLE_MAPS_API_KEY=YOUR_KEY
-```
+## Deploy to Vercel
+Click the button below **after** you push this repo to your GitHub (update the URL to your repo):
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/<your-username>/house-decision-dashboard)
 
-## Redfin details
-Paste a Redfin link and click **Fetch details** to best-effort parse: address, lot size, living area, facing, and assigned schools (ratings). There is no official Redfin API. Parsing may vary across listings; manual override fields are provided.
+Or: Import manually in the Vercel dashboard and add `GOOGLE_MAPS_API_KEY` as an Environment Variable.
 
-## Deploy on Vercel
-1. Push this repo to GitHub.
-2. In Vercel, import the repo and set `GOOGLE_MAPS_API_KEY` in Environment Variables.
-3. Deploy and share the URL.
+## Data sources
+- Google Geocoding/Distance/Places via serverless proxy (`/api/google`) using your server-side key.
+- Redfin page (best-effort HTML parse) for address, **lot size**, **living area**, **assigned schools**.
+- OpenStreetMap Overpass API for nearby road geometry (Estimate Facing). This is a heuristic; verify against listing/site plan.
 
 ## Notes
-- Donut chart excludes profits (negative existing-house deltas) to avoid misleading slices.
-- Facing is scraped when available; otherwise set manually. (True facing is not reliably derivable from maps without additional paid APIs.)
-- Data is for planning only; verify any estimate before purchase decisions.
+- The expense donut excludes profits (negative existing-house deltas) to avoid misleading slices.
+- The scraper can break if a listing layout changes — manual overrides are available in the UI.

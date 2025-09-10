@@ -1,8 +1,9 @@
 "use client";
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Share2, Home, DollarSign, MapPin, Clock, Compass, Building2, Baby, Activity, School, Ruler, Square } from "lucide-react";
+import { Share2, Home, DollarSign, MapPin, Clock, Compass, Building2, Baby, Activity, Save, GitCompare } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from "recharts";
+import Link from "next/link";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,7 +24,7 @@ function monthlyMortgage({ price, downPct, ratePct, years }: { price: number; do
 function encodeState(obj: any) { return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
 function decodeState(s: string) { try { return JSON.parse(decodeURIComponent(escape(atob(s)))); } catch { return null; } }
 
-export default function HouseDecisionDashboard() {
+export default function Page() {
   const [state, setState] = useState<any>(() => ({
     newPrice: 1000000, newDownPct: 20, newRatePct: 6.5, newYears: 30,
     newPropTaxMonthly: 900, newHOAMonthly: 0, newInsuranceMonthly: 150,
@@ -33,6 +34,7 @@ export default function HouseDecisionDashboard() {
     redfinUrl: "", newAddress: "", office1: "", office2: "", daycareAddress: "", badmintonAddress: "",
     lotSizeSqft: "", livingAreaSqft: "", facing: "Unknown",
     assignedSchools: [] as { name: string; rating?: number | null; level?: string }[],
+    scenarioName: "",
   }));
 
   useEffect(() => { const q = new URLSearchParams(window.location.search); const s = q.get("s"); const decoded = s && decodeState(s); if (decoded) setState((prev: any) => ({ ...prev, ...decoded })); }, []);
@@ -58,6 +60,7 @@ export default function HouseDecisionDashboard() {
   const [distance1, setDistance1] = useState<{ distanceText: string; durationText: string } | null>(null);
   const [distance2, setDistance2] = useState<{ distanceText: string; durationText: string } | null>(null);
   const [kinderCares, setKinderCares] = useState<{ name: string; vicinity: string }[]>([]);
+  const [estimating, setEstimating] = useState(false);
 
   async function fetchDistanceMatrix(origin: string, destination: string) {
     const qs = new URLSearchParams({ units: "imperial", origins: origin, destinations: destination }).toString();
@@ -123,6 +126,17 @@ export default function HouseDecisionDashboard() {
     }));
   }
 
+  async function estimateFacing() {
+    if (!state.newAddress) return;
+    try {
+      setEstimating(true);
+      const res = await fetch(`/api/facing?address=${encodeURIComponent(state.newAddress)}`);
+      const data = await res.json();
+      if (data?.facing) setState((s:any)=>({...s, facing: data.facing }));
+      else alert("Could not estimate facing for this address.");
+    } finally { setEstimating(false); }
+  }
+
   function copyShareLink() {
     const enc = encodeState(state);
     const u = new URL(window.location.href);
@@ -130,10 +144,23 @@ export default function HouseDecisionDashboard() {
     navigator.clipboard.writeText(u.toString());
   }
 
+  function saveScenario() {
+    const name = state.scenarioName?.trim();
+    if (!name) { alert("Name the scenario first"); return; }
+    const raw = localStorage.getItem("house-scenarios");
+    const arr = raw ? JSON.parse(raw) : [];
+    // Avoid storing big arrays like charts; store core state
+    const { scenarioName, ...payload } = state;
+    const updated = arr.filter((x:any)=>x.name!==name);
+    updated.push({ name, payload, savedAt: Date.now() });
+    localStorage.setItem("house-scenarios", JSON.stringify(updated));
+    alert(`Saved scenario: ${name}`);
+  }
+
   const dirOptions = ["N","NE","E","SE","S","SW","W","NW","Unknown"];
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-b from-slate-50 to-slate-100">
+    <div className="min-h-screen w-full">
       <div className="max-w-7xl mx-auto p-4 md:p-8">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
@@ -141,17 +168,16 @@ export default function HouseDecisionDashboard() {
             <h1 className="text-2xl md:text-3xl font-semibold">House Decision Dashboard</h1>
           </div>
           <div className="flex items-center gap-2">
-            <Button onClick={copyShareLink} variant="outline" className="rounded-2xl">
-              <Share2 className="w-4 h-4 mr-2" /> Share scenario
-            </Button>
+            <Input placeholder="Scenario name" value={state.scenarioName} onChange={(e)=>setState({...state, scenarioName: e.target.value})} style={{maxWidth:220}}/>
+            <Button onClick={saveScenario} variant="secondary" className="rounded-2xl"><Save className="w-4 h-4 mr-2"/> Save</Button>
+            <Link href="/compare"><Button variant="outline" className="rounded-2xl"><GitCompare className="w-4 h-4 mr-2"/> Compare</Button></Link>
+            <Button onClick={copyShareLink} variant="outline" className="rounded-2xl"><Share2 className="w-4 h-4 mr-2" /> Share</Button>
           </div>
         </div>
 
         <div className="grid gap-6 grid-cols-1 lg:grid-cols-3">
           <Card className="col-span-2">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2"><DollarSign className="w-5 h-5"/>Inputs</CardTitle>
-            </CardHeader>
+            <CardHeader><CardTitle className="flex items-center gap-2"><DollarSign className="w-5 h-5"/>Inputs</CardTitle></CardHeader>
             <CardContent className="space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="p-4 border rounded-xl bg-white">
@@ -175,9 +201,9 @@ export default function HouseDecisionDashboard() {
                       <p className="text-xs text-slate-500 mt-1">Fetch will attempt to pull address, facing, lot size, living area and assigned schools.</p>
                       <div className="mt-2 grid grid-cols-2 gap-3">
                         <div className="col-span-2"><Label>New house address</Label><Input placeholder="123 Main St, City, ST" value={state.newAddress} onChange={e=>setState({...state, newAddress: e.target.value})} /></div>
-                        <div><Label>Facing direction</Label><select className="w-full p-2 border rounded-md" value={state.facing} onChange={e=>setState({...state, facing: e.target.value})}>{dirOptions.map(d => <option key={d} value={d}>{d}</option>)}</select></div>
-                        <div><Label className="flex items-center gap-2"><Square className="w-4 h-4"/> Living area (sqft)</Label><Input value={state.livingAreaSqft} onChange={e=>setState({...state, livingAreaSqft: e.target.value})} /></div>
-                        <div><Label className="flex items-center gap-2"><Ruler className="w-4 h-4"/> Lot size (sqft)</Label><Input value={state.lotSizeSqft} onChange={e=>setState({...state, lotSizeSqft: e.target.value})} /></div>
+                        <div><Label>Facing direction</Label><div className="flex gap-2"><select className="w-full p-2 border rounded-md" value={state.facing} onChange={e=>setState({...state, facing: e.target.value})}>{["N","NE","E","SE","S","SW","W","NW","Unknown"].map(d => <option key={d} value={d}>{d}</option>)}</select><Button variant="secondary" onClick={estimateFacing} disabled={!state.newAddress || estimating}>{estimating? "Estimating…" : "Estimate Facing"}</Button></div></div>
+                        <div><Label className="flex items-center gap-2">Living area (sqft)</Label><Input value={state.livingAreaSqft} onChange={e=>setState({...state, livingAreaSqft: e.target.value})} /></div>
+                        <div><Label className="flex items-center gap-2">Lot size (sqft)</Label><Input value={state.lotSizeSqft} onChange={e=>setState({...state, lotSizeSqft: e.target.value})} /></div>
                       </div>
                     </div>
                   </div>
@@ -227,7 +253,7 @@ export default function HouseDecisionDashboard() {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
-                  <div><Label>Google Maps API key</Label><Input type="password" placeholder="AIza..." /></div>
+                  <div><Label>Server-side Google Maps API key</Label><Input disabled placeholder="Configured in .env.local on server" /></div>
                   <div className="flex items-end gap-2">
                     <Button onClick={handleDistances} className="w-full"><Clock className="w-4 h-4 mr-2"/>Distance to offices</Button>
                     <Button onClick={handleKinderCare} variant="secondary" className="w-full"><Baby className="w-4 h-4 mr-2"/>Find nearby KinderCare</Button>
@@ -240,17 +266,14 @@ export default function HouseDecisionDashboard() {
           <div className="flex flex-col gap-6">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2"><DollarSign className="w-5 h-5"/>Summary</CardTitle>
-                </CardHeader>
+                <CardHeader><CardTitle className="flex items-center gap-2"><DollarSign className="w-5 h-5"/>Summary</CardTitle></CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">Total Income</div><div className="text-lg font-semibold">{currency(grossIncome)}</div></div>
                     <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">Total Expenses (outflow)</div><div className="text-lg font-semibold">{currency(totalExpenses)}</div></div>
-                    <div className={`p-3 rounded-xl bg-white border text-lg font-semibold ${remainingIncome >= 0 ? "text-emerald-700" : "text-rose-700"}`}>{currency(remainingIncome)}</div>
+                    <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">Remaining Income</div><div className={`text-lg font-semibold ${remainingIncome >= 0 ? "text-emerald-700" : "text-rose-700"}`}>{currency(remainingIncome)}</div></div>
                     <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">House Facing</div><div className="text-lg font-semibold flex items-center gap-2"><Compass className="w-4 h-4"/>{state.facing}</div></div>
                   </div>
-
                   <div className="h-52">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
@@ -268,9 +291,7 @@ export default function HouseDecisionDashboard() {
 
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2"><DollarSign className="w-5 h-5"/>Income vs Outflow</CardTitle>
-                </CardHeader>
+                <CardHeader><CardTitle className="flex items-center gap-2"><DollarSign className="w-5 h-5"/>Income vs Outflow</CardTitle></CardHeader>
                 <CardContent>
                   <div className="h-52">
                     <ResponsiveContainer width="100%" height="100%">
@@ -289,50 +310,20 @@ export default function HouseDecisionDashboard() {
 
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2"><MapPin className="w-5 h-5"/>Commute, Daycare & Schools</CardTitle>
-                </CardHeader>
+                <CardHeader><CardTitle className="flex items-center gap-2"><MapPin className="w-5 h-5"/>Commute, Daycare & Schools</CardTitle></CardHeader>
                 <CardContent className="space-y-3 text-sm">
                   <div className="grid grid-cols-1 gap-2">
-                    <div className="p-3 rounded-xl bg-white border flex items-center justify-between">
-                      <div className="flex items-center gap-2"><Clock className="w-4 h-4"/>Office 1</div>
-                      <div>{distance1 ? `${distance1.distanceText} • ${distance1.durationText}` : "—"}</div>
-                    </div>
-                    <div className="p-3 rounded-xl bg-white border flex items-center justify-between">
-                      <div className="flex items-center gap-2"><Clock className="w-4 h-4"/>Office 2</div>
-                      <div>{distance2 ? `${distance2.distanceText} • ${distance2.durationText}` : "—"}</div>
-                    </div>
+                    <div className="p-3 rounded-xl bg-white border flex items-center justify-between"><div className="flex items-center gap-2"><Clock className="w-4 h-4"/>Office 1</div><div>{distance1 ? `${distance1.distanceText} • ${distance1.durationText}` : "—"}</div></div>
+                    <div className="p-3 rounded-xl bg-white border flex items-center justify-between"><div className="flex items-center gap-2"><Clock className="w-4 h-4"/>Office 2</div><div>{distance2 ? `${distance2.distanceText} • ${distance2.durationText}` : "—"}</div></div>
                     <div className="p-3 rounded-xl bg-white border">
                       <div className="font-medium mb-1">KinderCare nearby</div>
-                      {kinderCares.length ? (
-                        <ul className="list-disc pl-5">
-                          {kinderCares.map((k, i) => <li key={i}>{k.name} — <span className="text-slate-600">{k.vicinity}</span></li>)}
-                        </ul>
-                      ) : (
-                        <div className="text-slate-500">Use "Find nearby KinderCare" above.</div>
-                      )}
-                    </div>
-                    <div className="p-3 rounded-xl bg-white border">
-                      <div className="font-medium mb-1 flex items-center gap-2"><School className="w-4 h-4"/>Assigned schools (from Redfin)</div>
-                      {state.assignedSchools?.length ? (
-                        <ul className="list-disc pl-5">
-                          {state.assignedSchools.map((s: any, i: number) => (
-                            <li key={i}><span className="font-medium">{s.name}</span>{s.level ? ` (${s.level})` : ""}{typeof s.rating === "number" ? ` — ${s.rating}/10` : ""}</li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <div className="text-slate-500">Click "Fetch details" after pasting a Redfin link.</div>
-                      )}
+                      {kinderCares.length ? (<ul className="list-disc pl-5">{kinderCares.map((k, i) => <li key={i}>{k.name} — <span className="text-slate-600">{k.vicinity}</span></li>)}</ul>) : (<div className="text-slate-500">Use "Find nearby KinderCare" above.</div>)}
                     </div>
                   </div>
                 </CardContent>
               </Card>
             </motion.div>
           </div>
-        </div>
-
-        <div className="mt-8 text-xs text-slate-500 leading-relaxed">
-          <p><strong>Notes:</strong> Donut excludes profits (negative values) to avoid misleading slices. Facing is scraped when available on Redfin; otherwise leave manual. School ratings are best-effort parsed from the listing (usually GreatSchools). Data is for planning only.</p>
         </div>
       </div>
     </div>
