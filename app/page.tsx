@@ -270,19 +270,22 @@ export default function HouseDecisionDashboard() {
     setKinderCares(await findKinderCare(state.newAddress));
   }
 
-  // Nearby schools (approx)
+  // Nearby schools (approx) — TS-safe
   async function findNearbySchools(addressText: string) {
     setLoadingSchools(true);
     try {
-      const g = await geocodeFlexible(addressText);
-      if (!g) return [] as any[];
+      const geo = await geocodeFlexible(addressText);
+      if (!geo) return [] as any[];
 
-      async function closest(keyword: string, level: "Elementary"|"Middle"|"High") {
+      // Non-null, capture these in the closure
+      const { lat, lng } = geo;
+
+      async function closest(keyword: string, level: "Elementary" | "Middle" | "High") {
         const res = await callGoogle("place/nearbysearch", {
-          location: `${g.lat},${g.lng}`,
+          location: `${lat},${lng}`,
           rankby: "distance",
           keyword,
-          type: "school"
+          type: "school",
         });
         const first = res?.data?.results?.[0];
         return first ? { level, name: first.name, vicinity: first.vicinity } : null;
@@ -299,6 +302,7 @@ export default function HouseDecisionDashboard() {
       setLoadingSchools(false);
     }
   }
+
 
   // Assigned schools (NCES SABS, beta)
   async function fetchAssignedSchools() {
