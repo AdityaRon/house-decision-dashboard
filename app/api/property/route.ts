@@ -1,48 +1,59 @@
 export const runtime = "edge";
 
-type Out = {
-  livingAreaSqft: number | null;
-  lotSizeSqft: number | null;
-  source: string;
-};
+function toNum(v: any): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string") {
+    const n = Number(v.replace(/,/g, ""));
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const address = searchParams.get("address");
   if (!address) {
-    return new Response(JSON.stringify({ error: "Missing address" }), { status: 400, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({ error: "Missing address" }), {
+      status: 400, headers: { "content-type": "application/json" },
+    });
   }
-
-  const key = process.env.ESTATED_API_KEY;
+  const key = process.env.RENTCAST_API_KEY;
   if (!key) {
-    return new Response(JSON.stringify({ error: "Missing ESTATED_API_KEY" }), { status: 200, headers: { "content-type": "application/json" } });
+    // Don’t hard fail; just inform the UI there’s no key set.
+    return new Response(JSON.stringify({ error: "Missing RENTCAST_API_KEY" }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
   }
 
-  try {
-    const url = `https://api.estated.com/property/v3?token=${encodeURIComponent(key)}&address=${encodeURIComponent(address)}`;
-    const res = await fetch(url, { headers: { "User-Agent": "house-dashboard" } });
-    const data = await res.json();
+  const url = `https://api.rentcast.io/v1/properties?address=${encodeURIComponent(address)}`;
+  const res = await fetch(url, {
+    headers: { "X-Api-Key": key, Accept: "application/json", "User-Agent": "house-dashboard" },
+  });
+  const body = await res.json();
 
-    const b = data?.data?.building || {};
-    const l = data?.data?.lot || {};
+  const first =
+    (Array.isArray(body) && body[0]) ||
+    body?.properties?.[0] ||
+    body;
 
-    const living =
-      b?.size?.living_area?.sq_ft ??
-      b?.size?.gross_area?.sq_ft ??
-      b?.size?.building_area?.sq_ft ?? null;
+  const living =
+    first?.buildingSizeSqFt ||
+    first?.livingAreaSqFt ||
+    first?.squareFootage ||
+    first?.building?.sizeSqFt;
 
-    const lot =
-      l?.size?.sq_ft ??
-      l?.lot_size?.sq_ft ?? null;
+  const lot =
+    first?.lotSizeSqFt ||
+    first?.lot?.sizeSqFt ||
+    first?.lotSize;
 
-    const out: Out = {
-      livingAreaSqft: typeof living === "number" ? living : (typeof living === "string" ? Number(living.replace(/,/g, "")) : null),
-      lotSizeSqft: typeof lot === "number" ? lot : (typeof lot === "string" ? Number(lot.replace(/,/g, "")) : null),
-      source: "estated",
-    };
-
-    return new Response(JSON.stringify(out), { status: 200, headers: { "content-type": "application/json" } });
-  } catch (e: any) {
-    return new Response(JSON.stringify({ error: "Estated failed", details: String(e?.message || e) }), { status: 500, headers: { "content-type": "application/json" } });
-  }
+  return new Response(
+    JSON.stringify({
+      source: "rentcast",
+      livingAreaSqft: toNum(living),
+      lotSizeSqft: toNum(lot),
+      rawId: first?.id || null,
+    }),
+    { status: 200, headers: { "content-type": "application/json" } }
+  );
 }

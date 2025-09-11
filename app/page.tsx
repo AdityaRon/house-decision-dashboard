@@ -1,3 +1,4 @@
+// app/page.tsx
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -6,7 +7,7 @@ import {
   Share2, Home, DollarSign, MapPin, Clock, Compass, Building2, Baby, Activity, Loader2, Save, Bug, School
 } from "lucide-react";
 import {
-  Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend, ComposedChart
+  Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend, ComposedChart, LabelList, Cell
 } from "recharts";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { CardContent } from "@/components/ui/card";
@@ -15,11 +16,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 
-const currency = (n: number) => n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+const currency = (n: number) =>
+  n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const pct = (v: number) => `${(v * 100).toFixed(0)}%`;
-const num = (v: any, d = 0) => { const n = parseFloat(String(v).replace(/,/g, "")); return isFinite(n) ? n : d; };
+const num = (v: any, d = 0) => {
+  const n = parseFloat(String(v).replace(/,/g, ""));
+  return isFinite(n) ? n : d;
+};
 
-function monthlyMortgage({ price, downPct, ratePct, years }: { price: number; downPct: number; ratePct: number; years: number; }) {
+function monthlyMortgage({
+  price, downPct, ratePct, years,
+}: { price: number; downPct: number; ratePct: number; years: number }) {
   const loan = price * (1 - downPct / 100);
   const r = ratePct / 100 / 12;
   const n = years * 12;
@@ -27,8 +34,12 @@ function monthlyMortgage({ price, downPct, ratePct, years }: { price: number; do
   return (loan * r) / (1 - Math.pow(1 + r, -n));
 }
 
-function encodeState(obj: any) { return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
-function decodeState(s: string) { try { return JSON.parse(decodeURIComponent(escape(atob(s)))); } catch { return null; } }
+function encodeState(obj: any) {
+  return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));
+}
+function decodeState(s: string) {
+  try { return JSON.parse(decodeURIComponent(escape(atob(s)))); } catch { return null; }
+}
 
 function deriveAddressFromRedfinUrl(urlStr: string): string | null {
   try {
@@ -36,9 +47,9 @@ function deriveAddressFromRedfinUrl(urlStr: string): string | null {
     const parts = u.pathname.split("/").filter(Boolean);
     const idx = parts.findIndex((p) => p === "home");
     if (idx <= 0 || parts.length < 3) return null;
-    const state = parts[0]; // CA
-    const city = parts[1]?.replace(/-/g, " ");
-    const streetZip = parts[2] || "";
+    const state = parts[0]; // e.g., CA
+    const city = parts[1]?.replace(/-/g, " "); // e.g., San Jose
+    const streetZip = parts[2] || ""; // e.g., 1893-Newbury-Park-Dr-95133
     const tokens = streetZip.split("-");
     if (tokens.length < 2) return null;
     const zipToken = tokens[tokens.length - 1];
@@ -65,8 +76,8 @@ export default function HouseDecisionDashboard() {
     office1: "", office2: "", daycareAddress: "", badmintonAddress: "",
     // Property details
     livingAreaSqft: "", lotSizeSqft: "", facing: "Unknown",
-    assignedSchools: [] as { name: string; rating?: number | null; level?: string }[],
-    // Approx schools (Places)
+    // Schools
+    assignedSchools: [] as { name: string; rating?: number | null; level?: string; grades?: string; source?: string }[],
     nearbySchools: [] as { level: "Elementary"|"Middle"|"High", name: string, vicinity?: string }[],
   }));
 
@@ -104,10 +115,22 @@ export default function HouseDecisionDashboard() {
   useEffect(() => { localStorage.setItem("house-dashboard", JSON.stringify(state)); }, [state]);
 
   // Derived numbers
-  const newMortgageMonthly = useMemo(() => monthlyMortgage({ price: num(state.newPrice), downPct: num(state.newDownPct), ratePct: num(state.newRatePct), years: num(state.newYears, 30) }), [state.newPrice, state.newDownPct, state.newRatePct, state.newYears]);
-  const newHouseCarrying = useMemo(() => newMortgageMonthly + num(state.newPropTaxMonthly) + num(state.newHOAMonthly) + num(state.newInsuranceMonthly), [newMortgageMonthly, state.newPropTaxMonthly, state.newHOAMonthly, state.newInsuranceMonthly]);
-  const existingNet = useMemo(() => (num(state.existingMortgageMonthly) + num(state.existingPropTaxMonthly) + num(state.existingHOAMonthly)) - num(state.expectedRentMonthly), [state.existingMortgageMonthly, state.existingPropTaxMonthly, state.existingHOAMonthly, state.expectedRentMonthly]);
-  const livingExpenses = useMemo(() => num(state.expCars) + num(state.expFood) + num(state.expDaycare) + num(state.expElectricity) + num(state.expWater) + num(state.expMisc), [state.expCars, state.expFood, state.expDaycare, state.expElectricity, state.expWater, state.expMisc]);
+  const newMortgageMonthly = useMemo(() =>
+    monthlyMortgage({ price: num(state.newPrice), downPct: num(state.newDownPct), ratePct: num(state.newRatePct), years: num(state.newYears, 30) }),
+    [state.newPrice, state.newDownPct, state.newRatePct, state.newYears]
+  );
+  const newHouseCarrying = useMemo(() =>
+    newMortgageMonthly + num(state.newPropTaxMonthly) + num(state.newHOAMonthly) + num(state.newInsuranceMonthly),
+    [newMortgageMonthly, state.newPropTaxMonthly, state.newHOAMonthly, state.newInsuranceMonthly]
+  );
+  const existingNet = useMemo(() =>
+    (num(state.existingMortgageMonthly) + num(state.existingPropTaxMonthly) + num(state.existingHOAMonthly)) - num(state.expectedRentMonthly),
+    [state.existingMortgageMonthly, state.existingPropTaxMonthly, state.existingHOAMonthly, state.expectedRentMonthly]
+  );
+  const livingExpenses = useMemo(() =>
+    num(state.expCars) + num(state.expFood) + num(state.expDaycare) + num(state.expElectricity) + num(state.expWater) + num(state.expMisc),
+    [state.expCars, state.expFood, state.expDaycare, state.expElectricity, state.expWater, state.expMisc]
+  );
   const existingLoss = Math.max(existingNet, 0);
   const totalExpenses = useMemo(() => newHouseCarrying + livingExpenses + existingLoss, [newHouseCarrying, livingExpenses, existingLoss]);
   const grossIncome = useMemo(() => (num(state.p1SemiMonthly) + num(state.p2SemiMonthly)) * 2, [state.p1SemiMonthly, state.p2SemiMonthly]);
@@ -115,9 +138,12 @@ export default function HouseDecisionDashboard() {
 
   // Ratios (DTI-like)
   const frontEndDTI = useMemo(() => (grossIncome ? (newHouseCarrying / grossIncome) : 0), [newHouseCarrying, grossIncome]);
-  const backEndDTI = useMemo(() => (grossIncome ? ((newHouseCarrying + Math.max(existingNet, 0) + num(state.expCars)) / grossIncome) : 0), [newHouseCarrying, existingNet, state.expCars, grossIncome]);
+  const backEndDTI = useMemo(() =>
+    (grossIncome ? ((newHouseCarrying + Math.max(existingNet, 0) + num(state.expCars)) / grossIncome) : 0),
+    [newHouseCarrying, existingNet, state.expCars, grossIncome]
+  );
 
-  // Charts
+  // Chart data
   const outflowStack = [
     { name: "Mortgage P&I", value: Math.round(newMortgageMonthly) },
     { name: "Prop Tax", value: Math.round(num(state.newPropTaxMonthly)) },
@@ -131,7 +157,18 @@ export default function HouseDecisionDashboard() {
     { name: "Misc", value: Math.round(num(state.expMisc)) },
   ];
 
-  const incomeVsOutflow = [{ name: "Income", value: Math.round(grossIncome) }, { name: "Outflow", value: Math.round(totalExpenses) }];
+  const outflowKeys = [
+    "Mortgage P&I","Prop Tax","HOA","Insurance","Existing Loss","Cars","Food","Daycare","Utilities","Misc"
+  ];
+  const palette = [
+    "#2563eb","#16a34a","#f59e0b","#ef4444","#8b5cf6",
+    "#10b981","#06b6d4","#f97316","#84cc16","#64748b"
+  ];
+
+  const incomeVsOutflowData = [
+    { name: "Income", value: Math.round(grossIncome) },
+    { name: "Outflow", value: Math.round(totalExpenses) },
+  ];
 
   // Loading states
   const [distance1, setDistance1] = useState<{ distanceText: string; durationText: string } | null>(null);
@@ -184,7 +221,7 @@ export default function HouseDecisionDashboard() {
     return { distanceText: elem?.distance?.text || "-", durationText: (elem?.duration_in_traffic || elem?.duration)?.text || "-" };
   }
 
-  // KinderCare — try Nearby; if none, try Text Search "KinderCare near <address>"
+  // KinderCare — Nearby first; fallback to Text Search
   async function findKinderCare(addressText: string) {
     setLoadingKinder(true);
     try {
@@ -198,24 +235,21 @@ export default function HouseDecisionDashboard() {
         });
         results = near?.data?.results || [];
       }
-
       if (!results.length) {
         const text = await callGoogle("place/textsearch", { query: `KinderCare near ${addressText}`, region: "us" });
         results = text?.data?.results || [];
       }
-
       return results.map((r: any) => ({ name: r.name, vicinity: r.vicinity || r.formatted_address || "" }));
     } finally {
       setLoadingKinder(false);
     }
   }
-
   async function handleKinderCare() {
     if (!state.newAddress) return;
     setKinderCares(await findKinderCare(state.newAddress));
   }
 
-  // Approx “assigned” schools: closest Elementary/Middle/High via Places
+  // Nearby schools (approx)
   async function findNearbySchools(addressText: string) {
     setLoadingSchools(true);
     try {
@@ -246,19 +280,38 @@ export default function HouseDecisionDashboard() {
     }
   }
 
-  // Property fallback using Estated
-  async function fetchPropertyFromEstated() {
+  // Assigned schools (NCES SABS, beta)
+  async function fetchAssignedSchools() {
+    if (!state.newAddress) return;
+    setLoadingSchools(true);
+    try {
+      const res = await fetch(`/api/schools/assigned?address=${encodeURIComponent(state.newAddress)}`);
+      const data = await res.json();
+      if (Array.isArray(data?.assigned) && data.assigned.length) {
+        setState((s:any) => ({ ...s, assignedSchools: data.assigned }));
+      } else {
+        alert("No assigned schools from NCES SABS for this address. Showing nearby instead.");
+      }
+    } finally {
+      setLoadingSchools(false);
+    }
+  }
+
+  // Property fallback (RentCast)
+  async function fetchPropertyFacts() {
     if (!state.newAddress) return;
     setLoadingProperty(true);
     try {
       const res = await fetch(`/api/property?address=${encodeURIComponent(state.newAddress)}`);
       const data = await res.json();
       if (data?.livingAreaSqft || data?.lotSizeSqft) {
-        setState((s: any) => ({
+        setState((s:any) => ({
           ...s,
           livingAreaSqft: data.livingAreaSqft ?? s.livingAreaSqft,
           lotSizeSqft: data.lotSizeSqft ?? s.lotSizeSqft,
         }));
+      } else if (data?.error) {
+        alert(`Property fallback: ${data.error}`);
       }
     } finally {
       setLoadingProperty(false);
@@ -278,18 +331,17 @@ export default function HouseDecisionDashboard() {
     } finally { setLoadingDistances(false); }
   }
 
-  // Auto-run distances & lookups when we have an address
+  // Auto-run when we have an address
   useEffect(() => {
     if (state.newAddress) {
       handleDistances();
-      // Don’t spam APIs—run KinderCare/Schools once when empty
       if (!kinderCares.length) handleKinderCare();
       if (!state.nearbySchools.length) (async () => {
         const s = await findNearbySchools(state.newAddress);
         if (s?.length) setState((prev: any) => ({ ...prev, nearbySchools: s }));
       })();
-      // property fallback if fields missing
-      if (!state.livingAreaSqft || !state.lotSizeSqft) fetchPropertyFromEstated();
+      // If property fields empty, try fallback
+      if (!state.livingAreaSqft || !state.lotSizeSqft) fetchPropertyFacts();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.newAddress]);
@@ -303,7 +355,6 @@ export default function HouseDecisionDashboard() {
       if (pretty) setState((s: any) => ({ ...s, newAddress: pretty }));
     } finally { setParsingAddress(false); }
   }
-
   async function fetchRedfinDetails() {
     if (!state.redfinUrl) return;
     setLastRedfinReq({ url: state.redfinUrl });
@@ -333,7 +384,6 @@ export default function HouseDecisionDashboard() {
     u.searchParams.set("s", enc);
     navigator.clipboard.writeText(u.toString());
   }
-
   function saveDefaults() {
     const defs = { office1: state.office1, office2: state.office2, daycareAddress: state.daycareAddress, badmintonAddress: state.badmintonAddress };
     localStorage.setItem("house-defaults", JSON.stringify(defs));
@@ -361,8 +411,12 @@ export default function HouseDecisionDashboard() {
             <h1 className="text-2xl md:text-3xl font-semibold">House Decision Dashboard</h1>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant={debug ? "secondary" : "outline"} onClick={() => setDebug(d => !d)}><Bug className="w-4 h-4 mr-2"/>{debug ? "Debug on" : "Debug off"}</Button>
-            <Button onClick={copyShareLink} variant="outline" className="rounded-2xl"><Share2 className="w-4 h-4 mr-2" /> Share</Button>
+            <Button variant={debug ? "secondary" : "outline"} onClick={() => setDebug(d => !d)}>
+              <Bug className="w-4 h-4 mr-2"/>{debug ? "Debug on" : "Debug off"}
+            </Button>
+            <Button onClick={copyShareLink} variant="outline" className="rounded-2xl">
+              <Share2 className="w-4 h-4 mr-2" /> Share
+            </Button>
           </div>
         </div>
 
@@ -385,8 +439,8 @@ export default function HouseDecisionDashboard() {
                     <div className="col-span-2">
                       <Separator className="my-2"/>
                       <Label>Redfin link</Label>
-                      <div className="flex gap-2">
-                        <Input placeholder="https://www.redfin.com/..." value={state.redfinUrl} onChange={e=>setState({...state, redfinUrl: e.target.value})} />
+                      <div className="flex flex-wrap gap-2">
+                        <Input className="min-w-[260px] flex-1" placeholder="https://www.redfin.com/..." value={state.redfinUrl} onChange={e=>setState({...state, redfinUrl: e.target.value})} />
                         <Button type="button" variant="secondary" onClick={parseRedfinUrl} disabled={!state.redfinUrl || parsingAddress}>
                           {parsingAddress ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : null}
                           Parse address
@@ -395,12 +449,14 @@ export default function HouseDecisionDashboard() {
                           {loadingRedfin ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : null}
                           Fetch details
                         </Button>
-                        <Button type="button" variant="outline" onClick={fetchPropertyFromEstated} disabled={!state.newAddress || loadingProperty}>
+                        <Button type="button" variant="outline" onClick={fetchPropertyFacts} disabled={!state.newAddress || loadingProperty}>
                           {loadingProperty ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : null}
-                          Estated fallback
+                          Property facts (RentCast)
                         </Button>
                       </div>
-                      <p className="text-xs text-slate-500 mt-1">If Redfin blocks, “Estated fallback” can fill living area & lot size (add <code>ESTATED_API_KEY</code> in Vercel).</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        If the listing blocks us, use “Property facts (RentCast)” to fill living area & lot size.
+                      </p>
 
                       <div className="mt-2 grid grid-cols-2 gap-3">
                         <div className="col-span-2">
@@ -481,11 +537,26 @@ export default function HouseDecisionDashboard() {
                 <CardHeader><CardTitle className="flex items-center gap-2"><DollarSign className="w-5 h-5"/>Summary</CardTitle></CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid grid-cols-2 gap-3 text-sm">
-                    <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">Total Income</div><div className="text-lg font-semibold">{currency(grossIncome)}</div></div>
-                    <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">Total Expenses (outflow)</div><div className="text-lg font-semibold">{currency(totalExpenses)}</div></div>
-                    <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">Remaining Income</div><div className={`text-lg font-semibold ${remainingIncome >= 0 ? "text-emerald-700" : "text-rose-700"}`}>{currency(remainingIncome)}</div></div>
-                    <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">New Mortgage (est.)</div><div className="text-lg font-semibold">{currency(newMortgageMonthly)}</div></div>
-                    <div className="p-3 rounded-xl bg-white border"><div className="text-slate-500">House Facing</div><div className="text-lg font-semibold flex items-center gap-2"><Compass className="w-4 h-4"/>{state.facing}</div></div>
+                    <div className="p-3 rounded-xl bg-white border">
+                      <div className="text-slate-500">Total Income</div>
+                      <div className="text-lg font-semibold">{currency(grossIncome)}</div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white border">
+                      <div className="text-slate-500">Total Expenses (outflow)</div>
+                      <div className="text-lg font-semibold">{currency(totalExpenses)}</div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white border">
+                      <div className="text-slate-500">Remaining Income</div>
+                      <div className={`text-lg font-semibold ${remainingIncome >= 0 ? "text-emerald-700" : "text-rose-700"}`}>{currency(remainingIncome)}</div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white border">
+                      <div className="text-slate-500">New Mortgage (est.)</div>
+                      <div className="text-lg font-semibold">{currency(newMortgageMonthly)}</div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white border">
+                      <div className="text-slate-500">House Facing</div>
+                      <div className="text-lg font-semibold flex items-center gap-2"><Compass className="w-4 h-4"/>{state.facing}</div>
+                    </div>
                   </div>
 
                   {/* DTI gauges */}
@@ -517,8 +588,10 @@ export default function HouseDecisionDashboard() {
                         <YAxis />
                         <Tooltip formatter={(v)=>currency(Number(v))} />
                         <Legend />
-                        {outflowStack.map((seg) => (
-                          <Bar key={seg.name} dataKey={seg.name} stackId="a" />
+                        {outflowKeys.map((k, i) => (
+                          <Bar key={k} dataKey={k} stackId="a" fill={palette[i]}>
+                            <LabelList dataKey={k} position="top" formatter={(v: any)=> (v ? currency(Number(v)) : "")} />
+                          </Bar>
                         ))}
                       </ComposedChart>
                     </ResponsiveContainer>
@@ -527,13 +600,18 @@ export default function HouseDecisionDashboard() {
                   {/* Income vs Outflow */}
                   <div className="h-52">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={incomeVsOutflow}>
+                      <BarChart data={incomeVsOutflowData} barCategoryGap={24}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="name" />
                         <YAxis />
                         <Tooltip formatter={(v)=>currency(Number(v))} />
                         <Legend />
-                        <Bar dataKey="value" />
+                        <Bar dataKey="value" radius={[6,6,0,0]}>
+                          {incomeVsOutflowData.map((_, i) => (
+                            <Cell key={i} fill={i === 0 ? "#0ea5e9" : "#ef4444"} />
+                          ))}
+                          <LabelList dataKey="value" position="top" formatter={(v:any)=>currency(Number(v))} />
+                        </Bar>
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -549,17 +627,17 @@ export default function HouseDecisionDashboard() {
                   <div className="grid grid-cols-1 gap-2">
                     <div className="p-3 rounded-xl bg-white border flex items-center justify-between">
                       <div className="flex items-center gap-2"><Clock className="w-4 h-4"/>Office 1</div>
-                      <div>{distance1 ? `${distance1.distanceText} • ${distance1.durationText}` : "—"}</div>
+                      <div>{distance1 ? `${distance1.distanceText} • ${distance1.durationText}` : (loadingDistances ? "Loading..." : "—")}</div>
                     </div>
                     <div className="p-3 rounded-xl bg-white border flex items-center justify-between">
                       <div className="flex items-center gap-2"><Clock className="w-4 h-4"/>Office 2</div>
-                      <div>{distance2 ? `${distance2.distanceText} • ${distance2.durationText}` : "—"}</div>
+                      <div>{distance2 ? `${distance2.distanceText} • ${distance2.durationText}` : (loadingDistances ? "Loading..." : "—")}</div>
                     </div>
 
                     <div className="p-3 rounded-xl bg-white border">
                       <div className="font-medium mb-1 flex items-center gap-2"><Baby className="w-4 h-4"/>KinderCare nearby</div>
                       <div className="flex gap-2 mb-2">
-                        <Button onClick={handleKinderCare} disabled={!state.newAddress || loadingKinder}>
+                        <Button onClick={handleKinderCare} disabled={!state.newAddress || loadingKinder} className="h-8 px-2 text-xs">
                           {loadingKinder ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
                           Refresh
                         </Button>
@@ -571,43 +649,75 @@ export default function HouseDecisionDashboard() {
                           ))}
                         </ul>
                       ) : (
-                        <div className="text-slate-500">No KinderCare found in Text/Nearby search yet.</div>
+                        <div className="text-slate-500">No KinderCare found yet.</div>
                       )}
                     </div>
 
                     <div className="p-3 rounded-xl bg-white border">
                       <div className="font-medium mb-1 flex items-center gap-2"><School className="w-4 h-4"/>Schools</div>
-                      {Array.isArray(state.assignedSchools) && state.assignedSchools.length ? (
+
+                      {/* Assigned (from listing if present) */}
+                      {Array.isArray(state.assignedSchools) && state.assignedSchools.length > 0 && state.assignedSchools[0]?.source !== "NCES SABS 2015–2016" ? (
                         <>
-                          <div className="text-slate-500 mb-1">Assigned (via listing)</div>
+                          <div className="text-slate-500 mb-1">Assigned (from listing)</div>
                           <ul className="list-disc pl-5 mb-2">
                             {state.assignedSchools.map((s: any, i: number) => (
-                              <li key={i}><span className="font-medium">{s.name}</span>{s.level ? ` (${s.level})` : ""}{typeof s.rating === "number" ? ` — ${s.rating}/10` : ""}</li>
+                              <li key={i}>
+                                <span className="font-medium">{s.name}</span>
+                                {s.level ? ` (${s.level})` : ""}
+                                {typeof s.rating === "number" ? ` — ${s.rating}/10` : ""}
+                              </li>
                             ))}
                           </ul>
                         </>
                       ) : null}
 
-                      <div className="flex items-center justify-between">
-                        <div className="text-slate-500">Nearest schools (approx, via Places)</div>
-                        <Button size="sm" variant="outline" onClick={async () => {
-                          const s = await findNearbySchools(state.newAddress);
-                          if (s?.length) setState((prev: any) => ({ ...prev, nearbySchools: s }));
-                        }} disabled={!state.newAddress || loadingSchools}>
-                          {loadingSchools ? <Loader2 className="w-3 h-3 mr-2 animate-spin" /> : null}
-                          Refresh
-                        </Button>
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <div className="text-slate-500">Find official-ish assignment & nearby</div>
+                        <div className="flex gap-2">
+                          <Button variant="outline" onClick={fetchAssignedSchools} disabled={!state.newAddress || loadingSchools} className="h-8 px-2 text-xs">
+                            {loadingSchools ? <Loader2 className="w-3 h-3 mr-2 animate-spin" /> : null}
+                            Assigned (beta)
+                          </Button>
+                          <Button variant="outline" className="h-8 px-2 text-xs" onClick={async () => {
+                            const s = await findNearbySchools(state.newAddress);
+                            if (s?.length) setState((prev: any) => ({ ...prev, nearbySchools: s }));
+                          }} disabled={!state.newAddress || loadingSchools}>
+                            {loadingSchools ? <Loader2 className="w-3 h-3 mr-2 animate-spin" /> : null}
+                            Refresh nearby
+                          </Button>
+                        </div>
                       </div>
+
+                      {/* Assigned from NCES (beta) */}
+                      {Array.isArray(state.assignedSchools) && state.assignedSchools.length > 0 && state.assignedSchools[0]?.source === "NCES SABS 2015–2016" && (
+                        <>
+                          <div className="text-slate-500 mt-2">Assigned (NCES SABS 2015–2016)</div>
+                          <ul className="list-disc pl-5 mb-2">
+                            {state.assignedSchools.map((s: any, i: number) => (
+                              <li key={i}><span className="font-medium">{s.level}:</span> {s.name}{s.grades ? ` — Grades ${s.grades}` : ""}</li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+
+                      {/* Nearby */}
                       {state.nearbySchools?.length ? (
-                        <ul className="list-disc pl-5 mt-2">
-                          {state.nearbySchools.map((s: any, i: number) => (
-                            <li key={i}><span className="font-medium">{s.level}:</span> {s.name}{s.vicinity ? ` — ${s.vicinity}` : ""}</li>
-                          ))}
-                        </ul>
+                        <>
+                          <div className="text-slate-500">Nearest schools (approx)</div>
+                          <ul className="list-disc pl-5 mt-1">
+                            {state.nearbySchools.map((s: any, i: number) => (
+                              <li key={i}><span className="font-medium">{s.level}:</span> {s.name}{s.vicinity ? ` — ${s.vicinity}` : ""}</li>
+                            ))}
+                          </ul>
+                        </>
                       ) : (
                         <div className="text-slate-500">No nearby schools loaded yet.</div>
                       )}
-                      <div className="text-xs text-slate-500 mt-1">Note: “Assigned” requires district attendance boundaries. Nearby schools are an approximation; verify with the district.</div>
+
+                      <div className="text-xs text-slate-500 mt-1">
+                        “Assigned (beta)” uses NCES SABS boundaries; districts change. Verify with the district.
+                      </div>
                     </div>
                   </div>
                 </CardContent>
@@ -622,12 +732,12 @@ export default function HouseDecisionDashboard() {
             <pre className="whitespace-pre-wrap break-words">{JSON.stringify({
               lastRedfinReq, lastRedfinRes, lastGoogleReq, lastGoogleRes
             }, null, 2)}</pre>
-            <div className="text-slate-500 mt-2">Server logs: Vercel → Project → Functions → check /api/google and /api/redfin.</div>
+            <div className="text-slate-500 mt-2">Server logs: Vercel → Functions → check /api/google and /api/redfin.</div>
           </div>
         )}
 
         <div className="mt-8 text-xs text-slate-500 leading-relaxed">
-          <p><strong>Notes:</strong> When listings block scrapes, we still resolve address and distances. For official assigned schools and exact property facts, verify with your local district and county records.</p>
+          <p><strong>Notes:</strong> When listings block scrapes, we still resolve address and distances. For official assignment and exact property facts, confirm with the district and county records.</p>
         </div>
       </div>
     </div>
