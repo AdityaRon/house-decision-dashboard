@@ -80,6 +80,10 @@ export default function HouseDecisionDashboard() {
   const [debug, setDebug] = useState(false);
   const [lastGoogleReq, setLastGoogleReq] = useState<any>(null);
   const [lastGoogleRes, setLastGoogleRes] = useState<any>(null);
+  const [lastPropertyReq, setLastPropertyReq] = useState<any>(null);
+  const [lastPropertyRes, setLastPropertyRes] = useState<any>(null);
+  const [lastPropLookupAddr, setLastPropLookupAddr] = useState<string | null>(null);
+
 
   // Load state + defaults
   useEffect(() => {
@@ -289,12 +293,17 @@ export default function HouseDecisionDashboard() {
   }
 
   // Property facts (RentCast)
-  async function fetchPropertyFacts() {
+  async function fetchPropertyFacts(force = false) {
     if (!state.newAddress) return;
+    if (!force && lastPropLookupAddr === state.newAddress) return; // avoid duplicate calls
     setLoadingProperty(true);
     try {
-      const res = await fetch(`/api/property?address=${encodeURIComponent(state.newAddress)}`);
-      const data = await res.json();
+      const url = `/api/property?address=${encodeURIComponent(state.newAddress)}`;
+      setLastPropertyReq({ url });
+      const res = await fetch(url);
+      const data = await res.json().catch(() => ({}));
+      setLastPropertyRes({ status: res.status, ok: res.ok, data });
+
       if (data?.livingAreaSqft || data?.lotSizeSqft) {
         setState((s:any) => ({
           ...s,
@@ -302,13 +311,15 @@ export default function HouseDecisionDashboard() {
           lotSizeSqft: data.lotSizeSqft ?? s.lotSizeSqft,
         }));
       } else if (data?.error) {
-        alert(`Property fallback: ${data.error}`);
+        // Show a gentle message but don't block anything
+        console.warn("Property facts error:", data.error);
       }
+      setLastPropLookupAddr(state.newAddress);
     } finally {
       setLoadingProperty(false);
     }
   }
-
+    
   async function handleDistances() {
     if (!state.newAddress) return;
     try {
@@ -331,7 +342,7 @@ export default function HouseDecisionDashboard() {
         const s = await findNearbySchools(state.newAddress);
         if (s?.length) setState((prev: any) => ({ ...prev, nearbySchools: s }));
       })();
-      if (!state.livingAreaSqft || !state.lotSizeSqft) fetchPropertyFacts();
+      fetchPropertyFacts();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.newAddress]);
@@ -687,7 +698,7 @@ export default function HouseDecisionDashboard() {
           <div className="mt-6 p-4 border rounded-xl bg-white text-xs overflow-auto max-h-80">
             <div className="font-semibold mb-2">DEBUG</div>
             <pre className="whitespace-pre-wrap break-words">{JSON.stringify({
-              lastGoogleReq, lastGoogleRes
+              lastGoogleReq, lastGoogleRes, lastPropertyReq, lastPropertyRes
             }, null, 2)}</pre>
             <div className="text-slate-500 mt-2">Server logs: Vercel → Functions → check /api/google.</div>
           </div>
