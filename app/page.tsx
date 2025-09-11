@@ -4,10 +4,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
-  Share2, Home, DollarSign, MapPin, Clock, Compass, Building2, Baby, Activity, Loader2, Save, Bug, School
+  Share2, Home, DollarSign, MapPin, Clock, Compass, Building2, Baby, Activity, Loader2, Save, Bug, School, Globe
 } from "lucide-react";
 import {
-  Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend, ComposedChart, LabelList, Cell
+  Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, LabelList, Cell, Legend
 } from "recharts";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { CardContent } from "@/components/ui/card";
@@ -41,23 +41,17 @@ function decodeState(s: string) {
   try { return JSON.parse(decodeURIComponent(escape(atob(s)))); } catch { return null; }
 }
 
-function deriveAddressFromRedfinUrl(urlStr: string): string | null {
-  try {
-    const u = new URL(urlStr);
-    const parts = u.pathname.split("/").filter(Boolean);
-    const idx = parts.findIndex((p) => p === "home");
-    if (idx <= 0 || parts.length < 3) return null;
-    const state = parts[0]; // e.g., CA
-    const city = parts[1]?.replace(/-/g, " "); // e.g., San Jose
-    const streetZip = parts[2] || ""; // e.g., 1893-Newbury-Park-Dr-95133
-    const tokens = streetZip.split("-");
-    if (tokens.length < 2) return null;
-    const zipToken = tokens[tokens.length - 1];
-    const zip = /^\d{5}$/.test(zipToken) ? zipToken : "";
-    const street = (zip ? tokens.slice(0, -1) : tokens).join(" ").trim();
-    if (!street || !city || !state) return null;
-    return `${street}, ${city}, ${state}${zip ? ` ${zip}` : ""}`;
-  } catch { return null; }
+// Parse "123 St, City, ST 12345" → { city: "City", state: "ST" }
+function cityStateFromAddress(addr: string) {
+  const parts = addr.split(",").map(s => s.trim());
+  const city = parts.length >= 2 ? parts[1] : "";
+  let state = "";
+  if (parts.length >= 3) {
+    const tokens = parts[2].trim().split(/\s+/);
+    const two = tokens.find(t => /^[A-Z]{2}$/.test(t));
+    if (two) state = two;
+  }
+  return { city, state };
 }
 
 export default function HouseDecisionDashboard() {
@@ -71,8 +65,9 @@ export default function HouseDecisionDashboard() {
     expCars: 800, expFood: 1200, expDaycare: 1800, expElectricity: 200, expWater: 80, expMisc: 600,
     // Income (semi-monthly)
     p1SemiMonthly: 5000, p2SemiMonthly: 4000,
-    // Addresses
-    redfinUrl: "", newAddress: "",
+    // Address (typed/pasted directly)
+    newAddress: "",
+    // Defaults
     office1: "", office2: "", daycareAddress: "", badmintonAddress: "",
     // Property details
     livingAreaSqft: "", lotSizeSqft: "", facing: "Unknown",
@@ -83,8 +78,6 @@ export default function HouseDecisionDashboard() {
 
   // Debug
   const [debug, setDebug] = useState(false);
-  const [lastRedfinReq, setLastRedfinReq] = useState<any>(null);
-  const [lastRedfinRes, setLastRedfinRes] = useState<any>(null);
   const [lastGoogleReq, setLastGoogleReq] = useState<any>(null);
   const [lastGoogleRes, setLastGoogleRes] = useState<any>(null);
 
@@ -143,8 +136,8 @@ export default function HouseDecisionDashboard() {
     [newHouseCarrying, existingNet, state.expCars, grossIncome]
   );
 
-  // Chart data
-  const outflowStack = [
+  // Chart data — categories, sort descending, show top N + "Other"
+  const outflowItems = [
     { name: "Mortgage P&I", value: Math.round(newMortgageMonthly) },
     { name: "Prop Tax", value: Math.round(num(state.newPropTaxMonthly)) },
     { name: "HOA", value: Math.round(num(state.newHOAMonthly)) },
@@ -155,11 +148,13 @@ export default function HouseDecisionDashboard() {
     { name: "Daycare", value: Math.round(num(state.expDaycare)) },
     { name: "Utilities", value: Math.round(num(state.expElectricity) + num(state.expWater)) },
     { name: "Misc", value: Math.round(num(state.expMisc)) },
-  ];
+  ].filter(x => x.value > 0);
+  const sortedOutflows = [...outflowItems].sort((a,b) => b.value - a.value);
+  const TOP_N = 7;
+  const top = sortedOutflows.slice(0, TOP_N);
+  const otherSum = sortedOutflows.slice(TOP_N).reduce((s, x) => s + x.value, 0);
+  const displayOutflows = otherSum > 0 ? [...top, { name: "Other", value: otherSum }] : top;
 
-  const outflowKeys = [
-    "Mortgage P&I","Prop Tax","HOA","Insurance","Existing Loss","Cars","Food","Daycare","Utilities","Misc"
-  ];
   const palette = [
     "#2563eb","#16a34a","#f59e0b","#ef4444","#8b5cf6",
     "#10b981","#06b6d4","#f97316","#84cc16","#64748b"
@@ -175,8 +170,6 @@ export default function HouseDecisionDashboard() {
   const [distance2, setDistance2] = useState<{ distanceText: string; durationText: string } | null>(null);
   const [kinderCares, setKinderCares] = useState<{ name: string; vicinity: string }[]>([]);
   const [loadingDistances, setLoadingDistances] = useState(false);
-  const [loadingRedfin, setLoadingRedfin] = useState(false);
-  const [parsingAddress, setParsingAddress] = useState(false);
   const [loadingKinder, setLoadingKinder] = useState(false);
   const [loadingSchools, setLoadingSchools] = useState(false);
   const [loadingProperty, setLoadingProperty] = useState(false);
@@ -194,13 +187,11 @@ export default function HouseDecisionDashboard() {
 
   async function placeIdFor(input: string): Promise<string | null> {
     if (!input) return null;
-    // Find Place (handles fuzzy names)
     {
       const { data } = await callGoogle("place/findplacefromtext", { input, inputtype: "textquery", fields: "place_id" });
       const pid = data?.candidates?.[0]?.place_id;
       if (pid) return `place_id:${pid}`;
     }
-    // Fallback: geocode
     {
       const { data } = await callGoogle("geocode", { address: input });
       const pid = data?.results?.[0]?.place_id;
@@ -297,7 +288,7 @@ export default function HouseDecisionDashboard() {
     }
   }
 
-  // Property fallback (RentCast)
+  // Property facts (RentCast)
   async function fetchPropertyFacts() {
     if (!state.newAddress) return;
     setLoadingProperty(true);
@@ -340,43 +331,10 @@ export default function HouseDecisionDashboard() {
         const s = await findNearbySchools(state.newAddress);
         if (s?.length) setState((prev: any) => ({ ...prev, nearbySchools: s }));
       })();
-      // If property fields empty, try fallback
       if (!state.livingAreaSqft || !state.lotSizeSqft) fetchPropertyFacts();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.newAddress]);
-
-  // -------- Redfin actions with debug capture --------
-  async function parseRedfinUrl() {
-    if (!state.redfinUrl) return;
-    setParsingAddress(true);
-    try {
-      const pretty = deriveAddressFromRedfinUrl(state.redfinUrl);
-      if (pretty) setState((s: any) => ({ ...s, newAddress: pretty }));
-    } finally { setParsingAddress(false); }
-  }
-  async function fetchRedfinDetails() {
-    if (!state.redfinUrl) return;
-    setLastRedfinReq({ url: state.redfinUrl });
-    try {
-      setLoadingRedfin(true);
-      const res = await fetch(`/api/redfin?url=${encodeURIComponent(state.redfinUrl)}`);
-      const data = await res.json().catch(() => ({}));
-      setLastRedfinRes({ status: res.status, ok: res.ok, data });
-      if (res.ok && data) {
-        setState((s: any) => ({
-          ...s,
-          newAddress: data.address || s.newAddress,
-          lotSizeSqft: data.lotSizeSqft ?? s.lotSizeSqft,
-          livingAreaSqft: data.livingAreaSqft ?? s.livingAreaSqft,
-          assignedSchools: Array.isArray(data.schools) ? data.schools : s.assignedSchools,
-          facing: data.facing || s.facing,
-        }));
-      } else {
-        alert(`Redfin fetch failed: ${data?.error || "unknown error"}`);
-      }
-    } finally { setLoadingRedfin(false); }
-  }
 
   function copyShareLink() {
     const enc = encodeState(state);
@@ -390,7 +348,19 @@ export default function HouseDecisionDashboard() {
     alert("Defaults saved for Office/Daycare/Badminton.");
   }
 
-  const dirOptions = ["N","NE","E","SE","S","SW","W","NW","Unknown"];
+  // Google Earth opener
+  function openGoogleEarth() {
+    if (!state.newAddress) return;
+    const url = `https://earth.google.com/web/search/${encodeURIComponent(state.newAddress)}`;
+    window.open(url, "_blank", "noopener");
+  }
+
+  // GreatSchools link builder (search)
+  function greatSchoolsLink(schoolName: string) {
+    const { city, state: st } = cityStateFromAddress(state.newAddress || "");
+    const q = [schoolName, city, st].filter(Boolean).join(" ");
+    return `https://www.greatschools.org/search/?searchType=school&q=${encodeURIComponent(q)}`;
+  }
 
   // Simple progress bar
   function Progress({ value }: { value: number }) {
@@ -410,7 +380,7 @@ export default function HouseDecisionDashboard() {
             <Home className="w-8 h-8" />
             <h1 className="text-2xl md:text-3xl font-semibold">House Decision Dashboard</h1>
           </div>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2">
             <Button variant={debug ? "secondary" : "outline"} onClick={() => setDebug(d => !d)}>
               <Bug className="w-4 h-4 mr-2"/>{debug ? "Debug on" : "Debug off"}
             </Button>
@@ -438,30 +408,16 @@ export default function HouseDecisionDashboard() {
                     <div><Label>Insurance (monthly)</Label><Input value={state.newInsuranceMonthly} onChange={e=>setState({...state, newInsuranceMonthly: e.target.value})} /></div>
                     <div className="col-span-2">
                       <Separator className="my-2"/>
-                      <Label>Redfin link</Label>
-                      <div className="flex flex-wrap gap-2">
-                        <Input className="min-w-[260px] flex-1" placeholder="https://www.redfin.com/..." value={state.redfinUrl} onChange={e=>setState({...state, redfinUrl: e.target.value})} />
-                        <Button type="button" variant="secondary" onClick={parseRedfinUrl} disabled={!state.redfinUrl || parsingAddress}>
-                          {parsingAddress ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : null}
-                          Parse address
-                        </Button>
-                        <Button type="button" onClick={fetchRedfinDetails} disabled={!state.redfinUrl || loadingRedfin}>
-                          {loadingRedfin ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : null}
-                          Fetch details
-                        </Button>
-                        <Button type="button" variant="outline" onClick={fetchPropertyFacts} disabled={!state.newAddress || loadingProperty}>
-                          {loadingProperty ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : null}
-                          Property facts (RentCast)
-                        </Button>
-                      </div>
-                      <p className="text-xs text-slate-500 mt-1">
-                        If the listing blocks us, use “Property facts (RentCast)” to fill living area & lot size.
-                      </p>
-
-                      <div className="mt-2 grid grid-cols-2 gap-3">
+                      <div className="grid grid-cols-2 gap-3">
                         <div className="col-span-2">
-                          <Label>New house address</Label>
-                          <Input placeholder="123 Main St, City, ST" value={state.newAddress} onChange={e=>setState({...state, newAddress: e.target.value})} />
+                          <Label>Property address</Label>
+                          <div className="flex gap-2">
+                            <Input className="flex-1" placeholder="1893 Newbury Park Dr, San Jose, CA 95133" value={state.newAddress} onChange={e=>setState({...state, newAddress: e.target.value})} />
+                            <Button type="button" variant="outline" onClick={openGoogleEarth} disabled={!state.newAddress} className="whitespace-nowrap">
+                              <Globe className="w-4 h-4 mr-2" /> Open in Google Earth
+                            </Button>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1">Use Google Earth’s satellite view to estimate the house facing.</p>
                         </div>
                         <div>
                           <Label>Facing direction</Label>
@@ -471,6 +427,12 @@ export default function HouseDecisionDashboard() {
                         </div>
                         <div><Label>Living area (sqft)</Label><Input value={state.livingAreaSqft} onChange={e=>setState({...state, livingAreaSqft: e.target.value})} /></div>
                         <div><Label>Lot size (sqft)</Label><Input value={state.lotSizeSqft} onChange={e=>setState({...state, lotSizeSqft: e.target.value})} /></div>
+                        <div className="col-span-2 flex flex-wrap gap-2">
+                          <Button type="button" variant="outline" onClick={async ()=>{ if (state.newAddress) await fetchPropertyFacts(); }} disabled={!state.newAddress || loadingProperty}>
+                            {loadingProperty ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : null}
+                            Property facts (RentCast)
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -579,39 +541,44 @@ export default function HouseDecisionDashboard() {
                     </div>
                   </div>
 
-                  {/* Stacked outflow */}
+                  {/* Outflows by category (sorted, horizontal, labels on the right) */}
                   <div className="h-56">
                     <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart data={[{ name: "Monthly Outflows", ...Object.fromEntries(outflowStack.map(x => [x.name, x.value])) }]}>
+                      <BarChart
+                        data={displayOutflows}
+                        layout="vertical"
+                        barSize={18}
+                        margin={{ left: 8, right: 24, top: 8, bottom: 8 }}
+                      >
                         <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="name" />
-                        <YAxis />
+                        <XAxis type="number" tickFormatter={(v)=>currency(Number(v))} />
+                        <YAxis type="category" dataKey="name" width={120} />
                         <Tooltip formatter={(v)=>currency(Number(v))} />
-                        <Legend />
-                        {outflowKeys.map((k, i) => (
-                          <Bar key={k} dataKey={k} stackId="a" fill={palette[i]}>
-                            <LabelList dataKey={k} position="top" formatter={(v: any)=> (v ? currency(Number(v)) : "")} />
-                          </Bar>
-                        ))}
-                      </ComposedChart>
+                        <Bar dataKey="value" radius={[4,4,4,4]}>
+                          <LabelList dataKey="value" position="right" formatter={(v:any)=>currency(Number(v))} />
+                          {displayOutflows.map((_, i) => (
+                            <Cell key={i} fill={palette[i % palette.length]} />
+                          ))}
+                        </Bar>
+                      </BarChart>
                     </ResponsiveContainer>
                   </div>
 
                   {/* Income vs Outflow */}
-                  <div className="h-52">
+                  <div className="h-48">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={incomeVsOutflowData} barCategoryGap={24}>
+                      <BarChart data={incomeVsOutflowData} barCategoryGap={28}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="name" />
-                        <YAxis />
+                        <YAxis tickFormatter={(v)=>currency(Number(v))} />
                         <Tooltip formatter={(v)=>currency(Number(v))} />
-                        <Legend />
                         <Bar dataKey="value" radius={[6,6,0,0]}>
                           {incomeVsOutflowData.map((_, i) => (
                             <Cell key={i} fill={i === 0 ? "#0ea5e9" : "#ef4444"} />
                           ))}
                           <LabelList dataKey="value" position="top" formatter={(v:any)=>currency(Number(v))} />
                         </Bar>
+                        <Legend />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -655,25 +622,8 @@ export default function HouseDecisionDashboard() {
 
                     <div className="p-3 rounded-xl bg-white border">
                       <div className="font-medium mb-1 flex items-center gap-2"><School className="w-4 h-4"/>Schools</div>
-
-                      {/* Assigned (from listing if present) */}
-                      {Array.isArray(state.assignedSchools) && state.assignedSchools.length > 0 && state.assignedSchools[0]?.source !== "NCES SABS 2015–2016" ? (
-                        <>
-                          <div className="text-slate-500 mb-1">Assigned (from listing)</div>
-                          <ul className="list-disc pl-5 mb-2">
-                            {state.assignedSchools.map((s: any, i: number) => (
-                              <li key={i}>
-                                <span className="font-medium">{s.name}</span>
-                                {s.level ? ` (${s.level})` : ""}
-                                {typeof s.rating === "number" ? ` — ${s.rating}/10` : ""}
-                              </li>
-                            ))}
-                          </ul>
-                        </>
-                      ) : null}
-
                       <div className="flex items-center justify-between gap-3 flex-wrap">
-                        <div className="text-slate-500">Find official-ish assignment & nearby</div>
+                        <div className="text-slate-500">Find assigned (beta) & nearby</div>
                         <div className="flex gap-2">
                           <Button variant="outline" onClick={fetchAssignedSchools} disabled={!state.newAddress || loadingSchools} className="h-8 px-2 text-xs">
                             {loadingSchools ? <Loader2 className="w-3 h-3 mr-2 animate-spin" /> : null}
@@ -689,13 +639,20 @@ export default function HouseDecisionDashboard() {
                         </div>
                       </div>
 
-                      {/* Assigned from NCES (beta) */}
-                      {Array.isArray(state.assignedSchools) && state.assignedSchools.length > 0 && state.assignedSchools[0]?.source === "NCES SABS 2015–2016" && (
+                      {/* Assigned via NCES — each name links to GreatSchools search */}
+                      {Array.isArray(state.assignedSchools) && state.assignedSchools.length > 0 && (
                         <>
                           <div className="text-slate-500 mt-2">Assigned (NCES SABS 2015–2016)</div>
                           <ul className="list-disc pl-5 mb-2">
                             {state.assignedSchools.map((s: any, i: number) => (
-                              <li key={i}><span className="font-medium">{s.level}:</span> {s.name}{s.grades ? ` — Grades ${s.grades}` : ""}</li>
+                              <li key={i}>
+                                <span className="font-medium">{s.level || ""}:</span>{" "}
+                                <a href={greatSchoolsLink(s.name)} target="_blank" rel="noopener noreferrer" className="text-sky-700 hover:underline">
+                                  {s.name}
+                                </a>
+                                {s.grades ? ` — Grades ${s.grades}` : ""}{" "}
+                                <span className="text-slate-400">(ratings on GreatSchools)</span>
+                              </li>
                             ))}
                           </ul>
                         </>
@@ -730,14 +687,14 @@ export default function HouseDecisionDashboard() {
           <div className="mt-6 p-4 border rounded-xl bg-white text-xs overflow-auto max-h-80">
             <div className="font-semibold mb-2">DEBUG</div>
             <pre className="whitespace-pre-wrap break-words">{JSON.stringify({
-              lastRedfinReq, lastRedfinRes, lastGoogleReq, lastGoogleRes
+              lastGoogleReq, lastGoogleRes
             }, null, 2)}</pre>
-            <div className="text-slate-500 mt-2">Server logs: Vercel → Functions → check /api/google and /api/redfin.</div>
+            <div className="text-slate-500 mt-2">Server logs: Vercel → Functions → check /api/google.</div>
           </div>
         )}
 
         <div className="mt-8 text-xs text-slate-500 leading-relaxed">
-          <p><strong>Notes:</strong> When listings block scrapes, we still resolve address and distances. For official assignment and exact property facts, confirm with the district and county records.</p>
+          <p><strong>Notes:</strong> Enter the property address directly. Use Google Earth for the facing; use the GreatSchools links to see up-to-date ratings.</p>
         </div>
       </div>
     </div>
